@@ -1,0 +1,234 @@
+---
+title: Three-cloud networks
+description: "Implement the same network interface on GCP (VPC) and Azure (VNet) — proving the identical interface is what makes multi-cloud tractable."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+Last lesson we defined the `network` interface — `name`, `cidr` in; `network_id`, `private_subnet_ids`, `public_subnet_ids` out — and implemented it once as an AWS VPC. Now we implement it *twice more*: a GCP VPC (`modules/gcp/network`) and an Azure VNet (`modules/azure/network`), behind the **same five names**, and stand up their `live/gcp/network` and `live/azure/network` units.
+
+The whole test of the interface is this: when we're done, the three `terragrunt.hcl` units differ only in their `source` path. The cloud-specific reality inside — GCP's secondary IP ranges for VPC-native GKE, Azure's resource-group-scoped VNet with inline subnets — stays entirely behind the interface.
+
+## Why
+
+Multi-cloud is only tractable if the *difference* between clouds is contained. The networks genuinely differ:
+
+- **AWS** — a VPC with explicit `aws_subnet` resources, subnet ids as first-class handles.
+- **GCP** — a global VPC with regional subnetworks; VPC-native clusters need **secondary IP ranges** (aliases) for pods and services declared on the subnet.
+- **Azure** — a VNet scoped to a **resource group**, with subnets and an `address_space` rather than a CIDR.
+
+If those differences reached the cluster module, we'd have three cluster modules. They don't, because each network module absorbs its cloud's shape and emits the same three outputs. The interface is a firewall: cloud weirdness stops at the module boundary. That's the claim from the [architecture](/clouddeploy/en/introduction/architecture/), made concrete.
+
+## Pros & cons
+
+**One shared interface across three clouds vs. a bespoke module per cloud**
+
+- **Pros:** every consumer wires dependencies identically; a reader who understands `live/aws/network` instantly understands the GCP and Azure units; the `cluster` layer is written once.
+- **Cons:** the interface is a lowest-common-denominator. GCP's secondary ranges and Azure's resource groups don't map to any output — they're *implementation detail* the interface deliberately can't express. When a cloud feature genuinely needs to surface, you extend the interface on all three, not one.
+
+**GCP secondary ranges declared in the module vs. letting GKE auto-create a subnet**
+
+- **Pros:** declaring `secondary_ip_range` blocks ourselves means pod and service CIDRs are explicit, reviewable, and stable across applies — no surprise ranges appearing in a plan.
+- **Cons:** more resource wiring than the auto-created path, and the cluster module must know the *range names* to reference. We keep those names conventional (`pods`, `services`) so the coupling is predictable.
+
+## Set it up
+
+### 1. `modules/gcp/network/` — the GCP VPC
+
+Same `variables.tf` as AWS (`name`, `cidr`). The implementation is a custom-mode VPC plus one subnetwork carrying two secondary ranges — the aliases GKE consumes for pods and services.
+
+```hcl
+resource "google_compute_network" "this" {
+  name                    = var.name
+  auto_create_subnetworks = false
+}
+
+resource "google_compute_subnetwork" "private" {
+  name          = "${var.name}-private"
+  ip_cidr_range = cidrsubnet(var.cidr, 4, 0)
+  region        = "us-central1"
+  network       = google_compute_network.this.id
+
+  # VPC-native GKE reads these by name for pod + service IPs.
+  secondary_ip_range {
+    range_name    = "pods"
+    ip_cidr_range = cidrsubnet(var.cidr, 4, 1)
+  }
+  secondary_ip_range {
+    range_name    = "services"
+    ip_cidr_range = cidrsubnet(var.cidr, 8, 32)
+  }
+
+  private_ip_google_access = true
+}
+
+# Cloud Router + NAT so private nodes can reach the internet for images.
+resource "google_compute_router" "this" {
+  name    = "${var.name}-router"
+  region  = "us-central1"
+  network = google_compute_network.this.id
+}
+
+resource "google_compute_router_nat" "this" {
+  name                               = "${var.name}-nat"
+  router                             = google_compute_router.this.name
+  region                             = "us-central1"
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+}
+```
+
+GCP has no separate "public subnet" object — a node gets a public IP or reaches out via Cloud NAT. So we satisfy the interface honestly: `private_subnet_ids` is the real subnetwork, and `public_subnet_ids` returns the same subnetwork id (public exposure on GCP is a matter of the load balancer and node config, not a distinct subnet). `outputs.tf`:
+
+```hcl
+output "network_id" {
+  value = google_compute_network.this.id
+}
+
+output "private_subnet_ids" {
+  value = [google_compute_subnetwork.private.id]
+}
+
+output "public_subnet_ids" {
+  # GCP exposes services via load balancers, not a separate subnet.
+  value = [google_compute_subnetwork.private.id]
+}
+```
+
+That asymmetry — GCP folding public/private into one subnetwork — is exactly the kind of cloud difference the interface is designed to swallow. The consumer still gets two lists under the same names.
+
+### 2. `modules/azure/network/` — the Azure VNet
+
+Azure scopes everything to a **resource group**, and its `azurerm_virtual_network` takes `address_space` with inline `subnet` blocks. Same `name`/`cidr` interface.
+
+```hcl
+resource "azurerm_resource_group" "this" {
+  name     = "${var.name}-rg"
+  location = "eastus"
+}
+
+resource "azurerm_virtual_network" "this" {
+  name                = var.name
+  resource_group_name = azurerm_resource_group.this.name
+  location            = azurerm_resource_group.this.location
+  address_space       = [var.cidr]
+}
+
+resource "azurerm_subnet" "private" {
+  name                 = "${var.name}-private"
+  resource_group_name  = azurerm_resource_group.this.name
+  virtual_network_name = azurerm_virtual_network.this.name
+  address_prefixes     = [cidrsubnet(var.cidr, 4, 0)]
+}
+
+resource "azurerm_subnet" "public" {
+  name                 = "${var.name}-public"
+  resource_group_name  = azurerm_resource_group.this.name
+  virtual_network_name = azurerm_virtual_network.this.name
+  address_prefixes     = [cidrsubnet(var.cidr, 4, 1)]
+}
+```
+
+The VNet id is Azure's `network_id`, and each subnet exposes an `id`. AKS also needs the resource group later, but the *network* interface stays at three outputs — the cluster module derives what it needs from the network_id. `outputs.tf`:
+
+```hcl
+output "network_id" {
+  value = azurerm_virtual_network.this.id
+}
+
+output "private_subnet_ids" {
+  value = [azurerm_subnet.private.id]
+}
+
+output "public_subnet_ids" {
+  value = [azurerm_subnet.public.id]
+}
+```
+
+### 3. The `live/` units — identical but for `source`
+
+Here is the payoff, side by side. `live/gcp/network/terragrunt.hcl`:
+
+```hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+terraform {
+  source = "../../../modules/gcp/network"
+}
+
+inputs = {
+  name = "clouddeploy"
+  cidr = "10.10.0.0/16"
+}
+```
+
+`live/azure/network/terragrunt.hcl`:
+
+```hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+terraform {
+  source = "../../../modules/azure/network"
+}
+
+inputs = {
+  name = "clouddeploy"
+  cidr = "10.20.0.0/16"
+}
+```
+
+Compare these to `live/aws/network` from last lesson: same structure, same two inputs, different `source` and a non-overlapping `cidr` per cloud. Each `root.hcl` supplies the cloud's own backend (`gcs`, `azurerm`) and provider `generate` block, so the units stay this thin. *That* is the multi-cloud win — not that the clouds are the same, but that the interface makes them look the same to everything above.
+
+## Verify
+
+Plan each cloud's network from its `live/` tree:
+
+```bash
+cd live/gcp/network && terragrunt init && terragrunt plan
+cd ../../azure/network && terragrunt init && terragrunt plan
+```
+
+Each should report a small create-only plan — the VPC/VNet, its subnet(s), and NAT/router (GCP) — with no errors resolving the module source.
+
+Now the real test: confirm all three clouds emit the *same output names*. From the repo root:
+
+```bash
+terragrunt output -json --working-dir live/aws/network   | jq 'keys'
+terragrunt output -json --working-dir live/gcp/network   | jq 'keys'
+terragrunt output -json --working-dir live/azure/network | jq 'keys'
+```
+
+Every one prints the identical set — the interface holding across three clouds:
+
+```json
+[
+  "network_id",
+  "private_subnet_ids",
+  "public_subnet_ids"
+]
+```
+
+Finally, plan the whole networking layer across a cloud in one shot to confirm the tree wires up:
+
+```bash
+terragrunt run --all plan --working-dir live/gcp
+```
+
+**Check your understanding:**
+
+1. The three `live/*/network` units differ in exactly two places. Which two, and why does keeping everything else identical matter more than the code saved?
+2. GCP's `public_subnet_ids` returns the same id as `private_subnet_ids`. Is that a cheat or a correct reading of the interface? Defend your answer.
+3. Azure needs a resource group that AWS and GCP don't. Why doesn't that leak into the `network` interface — and where does it get consumed instead?
+4. A teammate wants pod/service CIDRs configurable per cloud. Explain why you'd add that input to all three modules at once rather than only GCP's.
+
+## Recap
+
+We implemented the `network` interface two more times — a GCP VPC with VPC-native secondary ranges, an Azure VNet scoped to a resource group — behind the same three outputs the AWS module emits. The `live/gcp/network` and `live/azure/network` units are line-for-line the shape of `live/aws/network`, differing only in `source` and `cidr`, because [Terragrunt](/clouddeploy/en/terragrunt/) and the interface between them absorb every cloud difference.
+
+The networks are done and their outputs are stable across all three clouds. That's exactly what the next layer needs: [Managed Kubernetes →](/clouddeploy/en/kubernetes/) consumes `network_id` and `private_subnet_ids` to place a cluster — and, like the network, it'll be one interface with three implementations.

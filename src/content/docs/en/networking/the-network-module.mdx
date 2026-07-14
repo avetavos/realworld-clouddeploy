@@ -1,0 +1,247 @@
+---
+title: The network module
+description: "Define one network interface — name, cidr in; network_id and subnet ids out — and back it with an AWS VPC implementation driven by Terragrunt."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+Every cluster needs a network to sit inside: a private IP space, subnets split across availability zones, and a route to the internet. On AWS that's a VPC; on GCP it's also a VPC; on Azure it's a VNet. Three different resources, three different sets of arguments — and if we let that difference leak upward, every layer above (the cluster, the database, CI) has to know which cloud it's on.
+
+So we don't. We define a **`network` module interface** — the same inputs and outputs on every cloud — and put the cloud-specific resources *behind* it. This lesson builds that interface and its first implementation, the AWS VPC (`modules/aws/network`), then wires it up as a Terragrunt unit at `live/aws/network`.
+
+The interface, exactly as the rest of CloudDeploy expects it:
+
+| | Name | Meaning |
+|---|---|---|
+| **in** | `name` | a prefix for every resource this module creates |
+| **in** | `cidr` | the network's address block (default `10.0.0.0/16`) |
+| **out** | `network_id` | the id the cluster attaches to |
+| **out** | `private_subnet_ids` | list — where nodes and databases live |
+| **out** | `public_subnet_ids` | list — where load balancers live |
+
+That's the whole contract. The next lesson, [Three-cloud networks →](/clouddeploy/en/networking/three-cloud-networks/), implements the *same five names* on GCP and Azure — but first we need one working end to end.
+
+## Why
+
+Because the interface is the only thing the layers above are allowed to depend on. A Terragrunt `cluster` unit says `subnet_ids = dependency.network.outputs.private_subnet_ids` — and that line is byte-for-byte identical on AWS, GCP, and Azure. The cluster never learns that AWS calls them `aws_subnet` and Azure calls them `azurerm_subnet`, because the module hands back a plain list of ids either way.
+
+Get the interface right and multi-cloud collapses from "three copies of everything" to "one wiring diagram, three implementations." Get it wrong — leak a `vpc_id` here, an `address_space` there — and every consumer forks. The interface is the load-bearing decision; the VPC resources are just how we honor it on one cloud.
+
+## Pros & cons
+
+**A narrow interface (`name`, `cidr` → three ids) vs. exposing the whole VPC**
+
+- **Pros:** consumers wire to five stable names; the AWS-specific machinery (NAT gateways, route tables, IGW) stays hidden and can change without touching a single `live/` unit.
+- **Cons:** anything a consumer genuinely needs later — a security-group id, a route table — has to be *promoted* to an explicit output on purpose. That friction is deliberate: it keeps the interface honest instead of letting it sprawl.
+
+**Public + private subnets vs. a single flat subnet**
+
+- **Pros:** load balancers get public subnets with a route to the internet; nodes and databases sit in private subnets that only reach out through a NAT gateway — the standard, defensible posture for a production cluster.
+- **Cons:** a NAT gateway is a real hourly cost and a single-AZ failure point unless you run one per zone. We run one to keep the capstone cheap, and name the trade-off rather than hide it.
+
+## Set it up
+
+### 1. `modules/aws/network/variables.tf`
+
+The interface inputs. Nothing here is AWS-specific — these same two variables appear in the GCP and Azure modules next lesson.
+
+```hcl
+variable "name" {
+  type        = string
+  description = "Prefix for all network resources."
+}
+
+variable "cidr" {
+  type        = string
+  default     = "10.0.0.0/16"
+  description = "CIDR block for the VPC."
+}
+```
+
+### 2. `modules/aws/network/main.tf`
+
+The AWS implementation: a VPC, one public and one private subnet per availability zone, an internet gateway for the public tier, and a NAT gateway so private nodes can pull images. We carve subnet CIDRs out of the VPC block with `cidrsubnet` so the module works for any `cidr` the caller passes.
+
+```hcl
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+locals {
+  # Use the first two AZs in the region.
+  azs = slice(data.aws_availability_zones.available.names, 0, 2)
+}
+
+resource "aws_vpc" "this" {
+  cidr_block           = var.cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags                 = { Name = var.name }
+}
+
+resource "aws_internet_gateway" "this" {
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = "${var.name}-igw" }
+}
+
+resource "aws_subnet" "public" {
+  count                   = length(local.azs)
+  vpc_id                  = aws_vpc.this.id
+  availability_zone       = local.azs[count.index]
+  cidr_block              = cidrsubnet(var.cidr, 4, count.index)
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name                     = "${var.name}-public-${count.index}"
+    "kubernetes.io/role/elb" = "1" # EKS puts public load balancers here.
+  }
+}
+
+resource "aws_subnet" "private" {
+  count             = length(local.azs)
+  vpc_id            = aws_vpc.this.id
+  availability_zone = local.azs[count.index]
+  cidr_block        = cidrsubnet(var.cidr, 4, count.index + length(local.azs))
+
+  tags = {
+    Name                              = "${var.name}-private-${count.index}"
+    "kubernetes.io/role/internal-elb" = "1" # Internal load balancers + nodes.
+  }
+}
+
+# One NAT gateway (in the first public subnet) for all private egress.
+resource "aws_eip" "nat" {
+  domain = "vpc"
+  tags   = { Name = "${var.name}-nat" }
+}
+
+resource "aws_nat_gateway" "this" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id
+  tags          = { Name = "${var.name}-nat" }
+  depends_on    = [aws_internet_gateway.this]
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.this.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.this.id
+  }
+  tags = { Name = "${var.name}-public" }
+}
+
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.this.id
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.this.id
+  }
+  tags = { Name = "${var.name}-private" }
+}
+
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "private" {
+  count          = length(aws_subnet.private)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+```
+
+The `kubernetes.io/role/elb` and `kubernetes.io/role/internal-elb` tags are how the AWS Load Balancer Controller discovers which subnets to place public vs. internal load balancers in — a concrete example of an AWS detail we handle *inside* the module so consumers never see it.
+
+### 3. `modules/aws/network/outputs.tf`
+
+The interface outputs — the only names the rest of CloudDeploy is allowed to reference.
+
+```hcl
+output "network_id" {
+  value = aws_vpc.this.id
+}
+
+output "private_subnet_ids" {
+  value = aws_subnet.private[*].id
+}
+
+output "public_subnet_ids" {
+  value = aws_subnet.public[*].id
+}
+```
+
+### 4. `live/aws/network/terragrunt.hcl`
+
+The Terragrunt unit that instantiates the module. It inherits the S3 backend and `aws` provider from `root.hcl` (built back in [Terragrunt & Remote State](/clouddeploy/en/terragrunt/)), so all it supplies is the source and the two interface inputs.
+
+```hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+terraform {
+  source = "../../../modules/aws/network"
+}
+
+inputs = {
+  name = "clouddeploy"
+  cidr = "10.0.0.0/16"
+}
+```
+
+This is the whole point of the split: the module says *what a network is*, and this six-line unit says *which cloud, which name, which address space*. Next lesson, the GCP and Azure units look identical — only the `source` path changes.
+
+## Verify
+
+Initialize and plan the unit. Terragrunt downloads the module source, wires the backend, and shows what it will create:
+
+```bash
+cd live/aws/network
+terragrunt init
+terragrunt plan
+```
+
+Expected: a plan creating the VPC, four subnets (two public, two private), an internet gateway, a NAT gateway with its EIP, and the route tables — roughly:
+
+```
+Plan: 13 to add, 0 to change, 0 to destroy.
+```
+
+Apply it, then confirm the outputs the interface promises are actually populated:
+
+```bash
+terragrunt apply
+terragrunt output
+```
+
+```
+network_id         = "vpc-0a1b2c3d4e5f67890"
+private_subnet_ids = [
+  "subnet-0aaa...",
+  "subnet-0bbb...",
+]
+public_subnet_ids = [
+  "subnet-0ccc...",
+  "subnet-0ddd...",
+]
+```
+
+Two non-empty lists and a VPC id — that's the contract satisfied. The [cluster module](/clouddeploy/en/kubernetes/) will consume `network_id` and `private_subnet_ids` without ever knowing they came from AWS.
+
+**Check your understanding:**
+
+1. A `live/aws/cluster` unit needs to place nodes on the network. Which output does it reference, and why is the *name* of that output the thing that makes multi-cloud work?
+2. Why do the public subnets carry a `kubernetes.io/role/elb` tag while the private ones carry `kubernetes.io/role/internal-elb` — and who reads those tags?
+3. You want the cluster module to later attach a security group created here. What has to change in `outputs.tf`, and why is that friction a feature rather than a bug?
+4. The module runs a single NAT gateway. Name one cost consequence and one availability consequence, and say what you'd change for real production.
+
+## Recap
+
+We defined the `network` interface — `name`, `cidr` in; `network_id`, `private_subnet_ids`, `public_subnet_ids` out — and backed it with a real AWS VPC: public and private subnets across two AZs, an internet gateway, a NAT gateway, and the EKS discovery tags, all hidden behind those five names. The `live/aws/network` unit instantiates it in six lines because `root.hcl` already owns the backend and provider.
+
+The interface is the payoff. Nothing above the network references a VPC — only `network_id` and two subnet lists. Next we prove that claim by implementing the *exact same interface* on two more clouds: [Three-cloud networks →](/clouddeploy/en/networking/three-cloud-networks/).

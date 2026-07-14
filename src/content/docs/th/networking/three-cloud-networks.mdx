@@ -1,0 +1,234 @@
+---
+title: Three-cloud networks
+description: "Implement network interface เดียวกันบน GCP (VPC) และ Azure (VNet) — พิสูจน์ว่า interface ที่เหมือนกันเป๊ะคือสิ่งที่ทำให้ multi-cloud จัดการได้"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+บทที่แล้วเรานิยาม `network` interface — รับ `name`, `cidr` เข้า; คืน `network_id`, `private_subnet_ids`, `public_subnet_ids` ออก — แล้ว implement มันครั้งเดียวเป็น AWS VPC ตอนนี้เรา implement มัน *อีกสองครั้ง*: GCP VPC (`modules/gcp/network`) และ Azure VNet (`modules/azure/network`) หลัง **ห้าชื่อเดียวกัน** แล้วตั้ง unit `live/gcp/network` และ `live/azure/network` ขึ้นมา
+
+บททดสอบทั้งหมดของ interface คือสิ่งนี้: เมื่อเราทำเสร็จ `terragrunt.hcl` unit ทั้งสามต่างกันแค่ที่ path ของ `source` เท่านั้น ความจริงที่เฉพาะต่อ cloud ข้างใน — secondary IP range ของ GCP สำหรับ VPC-native GKE, VNet ของ Azure ที่ scope อยู่กับ resource group พร้อม subnet แบบ inline — ยังคงอยู่หลัง interface ทั้งหมด
+
+## Why
+
+multi-cloud จัดการได้ก็ต่อเมื่อ *ความต่าง* ระหว่าง cloud ถูกกักไว้ network ต่างกันจริง:
+
+- **AWS** — VPC พร้อม `aws_subnet` resource แบบชัดเจน subnet id เป็น handle ระดับ first-class
+- **GCP** — global VPC พร้อม regional subnetwork; VPC-native cluster ต้องมี **secondary IP range** (alias) สำหรับ pod และ service ที่ประกาศไว้บน subnet
+- **Azure** — VNet ที่ scope อยู่กับ **resource group** พร้อม subnet และ `address_space` แทน CIDR
+
+ถ้าความต่างพวกนั้นไปถึง cluster module เราจะมี cluster module สามตัว มันไม่ไป เพราะ network module แต่ละตัวดูดซับรูปทรงของ cloud ตัวเองไว้ และปล่อย output สามตัวเดียวกันออกมา interface คือ firewall: ความประหลาดของ cloud หยุดที่ขอบเขต module นั่นคือคำกล่าวจาก [architecture](/clouddeploy/th/introduction/architecture/) ที่ทำให้เป็นรูปธรรม
+
+## Pros & cons
+
+**Interface ร่วมชุดเดียวข้ามสาม cloud vs. module ที่ทำเฉพาะต่อ cloud**
+
+- **Pros:** consumer ทุกตัวต่อสาย dependency เหมือนกัน; คนที่เข้าใจ `live/aws/network` เข้าใจ unit ของ GCP และ Azure ทันที; `cluster` layer เขียนครั้งเดียว
+- **Cons:** interface คือตัวส่วนร่วมน้อยที่สุด secondary range ของ GCP และ resource group ของ Azure ไม่ map เข้ากับ output ตัวไหน — มันคือ *implementation detail* ที่ interface ตั้งใจแสดงออกไม่ได้ เมื่อ feature ของ cloud ต้องโผล่ขึ้นมาจริง คุณ extend interface บนทั้งสามตัว ไม่ใช่ตัวเดียว
+
+**Secondary range ของ GCP ที่ประกาศใน module vs. ปล่อยให้ GKE auto-create subnet**
+
+- **Pros:** การประกาศ `secondary_ip_range` block เองหมายความว่า CIDR ของ pod และ service ชัดเจน review ได้ และเสถียรข้ามการ apply — ไม่มี range เซอร์ไพรส์โผล่ใน plan
+- **Cons:** ต่อสาย resource มากกว่าทางแบบ auto-create และ cluster module ต้องรู้ *ชื่อ range* เพื่ออ้างอิง เราคงชื่อพวกนั้นให้เป็น convention (`pods`, `services`) เพื่อให้ coupling คาดเดาได้
+
+## Set it up
+
+### 1. `modules/gcp/network/` — the GCP VPC
+
+`variables.tf` เดียวกับ AWS (`name`, `cidr`) implementation คือ custom-mode VPC บวก subnetwork หนึ่งตัวที่พก secondary range สองตัว — alias ที่ GKE consume สำหรับ pod และ service
+
+```hcl
+resource "google_compute_network" "this" {
+  name                    = var.name
+  auto_create_subnetworks = false
+}
+
+resource "google_compute_subnetwork" "private" {
+  name          = "${var.name}-private"
+  ip_cidr_range = cidrsubnet(var.cidr, 4, 0)
+  region        = "us-central1"
+  network       = google_compute_network.this.id
+
+  # VPC-native GKE reads these by name for pod + service IPs.
+  secondary_ip_range {
+    range_name    = "pods"
+    ip_cidr_range = cidrsubnet(var.cidr, 4, 1)
+  }
+  secondary_ip_range {
+    range_name    = "services"
+    ip_cidr_range = cidrsubnet(var.cidr, 8, 32)
+  }
+
+  private_ip_google_access = true
+}
+
+# Cloud Router + NAT so private nodes can reach the internet for images.
+resource "google_compute_router" "this" {
+  name    = "${var.name}-router"
+  region  = "us-central1"
+  network = google_compute_network.this.id
+}
+
+resource "google_compute_router_nat" "this" {
+  name                               = "${var.name}-nat"
+  router                             = google_compute_router.this.name
+  region                             = "us-central1"
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+}
+```
+
+GCP ไม่มี object "public subnet" แยกต่างหาก — node ได้ public IP หรือออกไปข้างนอกผ่าน Cloud NAT เราจึงทำตาม interface อย่างซื่อสัตย์: `private_subnet_ids` คือ subnetwork จริง และ `public_subnet_ids` คืน id ของ subnetwork เดียวกันนั้น (public exposure บน GCP เป็นเรื่องของ load balancer และ config ของ node ไม่ใช่ subnet ที่แยกออกมา) `outputs.tf`:
+
+```hcl
+output "network_id" {
+  value = google_compute_network.this.id
+}
+
+output "private_subnet_ids" {
+  value = [google_compute_subnetwork.private.id]
+}
+
+output "public_subnet_ids" {
+  # GCP exposes services via load balancers, not a separate subnet.
+  value = [google_compute_subnetwork.private.id]
+}
+```
+
+ความไม่สมมาตรนั้น — GCP พับ public/private ให้อยู่ใน subnetwork เดียว — คือชนิดของความต่างระหว่าง cloud ที่ interface ถูกออกแบบมาให้กลืนพอดี consumer ยังได้ list สองตัวภายใต้ชื่อเดียวกัน
+
+### 2. `modules/azure/network/` — the Azure VNet
+
+Azure scope ทุกอย่างเข้ากับ **resource group** และ `azurerm_virtual_network` ของมันรับ `address_space` พร้อม `subnet` block แบบ inline interface `name`/`cidr` เดียวกัน
+
+```hcl
+resource "azurerm_resource_group" "this" {
+  name     = "${var.name}-rg"
+  location = "eastus"
+}
+
+resource "azurerm_virtual_network" "this" {
+  name                = var.name
+  resource_group_name = azurerm_resource_group.this.name
+  location            = azurerm_resource_group.this.location
+  address_space       = [var.cidr]
+}
+
+resource "azurerm_subnet" "private" {
+  name                 = "${var.name}-private"
+  resource_group_name  = azurerm_resource_group.this.name
+  virtual_network_name = azurerm_virtual_network.this.name
+  address_prefixes     = [cidrsubnet(var.cidr, 4, 0)]
+}
+
+resource "azurerm_subnet" "public" {
+  name                 = "${var.name}-public"
+  resource_group_name  = azurerm_resource_group.this.name
+  virtual_network_name = azurerm_virtual_network.this.name
+  address_prefixes     = [cidrsubnet(var.cidr, 4, 1)]
+}
+```
+
+VNet id คือ `network_id` ของ Azure และ subnet แต่ละตัว expose `id` AKS ต้องการ resource group ในภายหลังด้วย แต่ interface *network* ยังคงอยู่ที่สาม output — cluster module derive สิ่งที่มันต้องการจาก network_id `outputs.tf`:
+
+```hcl
+output "network_id" {
+  value = azurerm_virtual_network.this.id
+}
+
+output "private_subnet_ids" {
+  value = [azurerm_subnet.private.id]
+}
+
+output "public_subnet_ids" {
+  value = [azurerm_subnet.public.id]
+}
+```
+
+### 3. The `live/` units — identical but for `source`
+
+นี่คือผลตอบแทน วางเทียบกัน `live/gcp/network/terragrunt.hcl`:
+
+```hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+terraform {
+  source = "../../../modules/gcp/network"
+}
+
+inputs = {
+  name = "clouddeploy"
+  cidr = "10.10.0.0/16"
+}
+```
+
+`live/azure/network/terragrunt.hcl`:
+
+```hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+terraform {
+  source = "../../../modules/azure/network"
+}
+
+inputs = {
+  name = "clouddeploy"
+  cidr = "10.20.0.0/16"
+}
+```
+
+เทียบพวกนี้กับ `live/aws/network` จากบทที่แล้ว: structure เดียวกัน input สองตัวเดียวกัน `source` ต่างกัน และ `cidr` ที่ไม่ทับกันต่อ cloud `root.hcl` แต่ละตัวจัดหา backend ของ cloud ตัวเอง (`gcs`, `azurerm`) และ provider `generate` block ดังนั้น unit ยังบางแบบนี้ *นั่น* คือชัยชนะของ multi-cloud — ไม่ใช่ว่า cloud เหมือนกัน แต่คือ interface ทำให้มันดูเหมือนกันสำหรับทุกอย่างที่อยู่ข้างบน
+
+## Verify
+
+Plan network ของแต่ละ cloud จาก tree `live/` ของมัน:
+
+```bash
+cd live/gcp/network && terragrunt init && terragrunt plan
+cd ../../azure/network && terragrunt init && terragrunt plan
+```
+
+แต่ละตัวควรรายงาน plan แบบ create-only เล็ก ๆ — VPC/VNet, subnet ของมัน และ NAT/router (GCP) — โดยไม่มี error ในการ resolve module source
+
+ทีนี้บททดสอบจริง: ยืนยันว่าทั้งสาม cloud ปล่อย *ชื่อ output ชุดเดียวกัน* จาก repo root:
+
+```bash
+terragrunt output -json --working-dir live/aws/network   | jq 'keys'
+terragrunt output -json --working-dir live/gcp/network   | jq 'keys'
+terragrunt output -json --working-dir live/azure/network | jq 'keys'
+```
+
+ทุกตัวพิมพ์ชุดที่เหมือนกันเป๊ะ — interface ยึดได้ข้ามสาม cloud:
+
+```json
+[
+  "network_id",
+  "private_subnet_ids",
+  "public_subnet_ids"
+]
+```
+
+สุดท้าย plan networking layer ทั้งหมดข้าม cloud ในทีเดียวเพื่อยืนยันว่า tree ต่อสายกัน:
+
+```bash
+terragrunt run --all plan --working-dir live/gcp
+```
+
+**ตรวจสอบความเข้าใจ:**
+
+1. `live/*/network` unit ทั้งสามต่างกันในสองจุดพอดี จุดไหนสองจุด และทำไมการคงทุกอย่างที่เหลือให้เหมือนกันถึงสำคัญกว่า code ที่ประหยัดได้?
+2. `public_subnet_ids` ของ GCP คืน id เดียวกับ `private_subnet_ids` นั่นเป็นการโกงหรือเป็นการอ่าน interface ที่ถูกต้อง? ปกป้องคำตอบของคุณ
+3. Azure ต้องมี resource group ที่ AWS และ GCP ไม่ต้อง ทำไมมันไม่รั่วเข้า `network` interface — และมันไปถูก consume ที่ไหนแทน?
+4. เพื่อนร่วมทีมอยากให้ CIDR ของ pod/service config ได้ต่อ cloud อธิบายว่าทำไมคุณถึงเพิ่ม input นั้นเข้าทั้งสาม module พร้อมกัน แทนที่จะเฉพาะของ GCP
+
+## Recap
+
+เรา implement `network` interface อีกสองครั้ง — GCP VPC พร้อม secondary range แบบ VPC-native, Azure VNet ที่ scope อยู่กับ resource group — หลัง output สามตัวเดียวกับที่ AWS module ปล่อย `live/gcp/network` และ `live/azure/network` unit เป็นรูปทรงเดียวกับ `live/aws/network` แบบบรรทัดต่อบรรทัด ต่างกันแค่ `source` และ `cidr` เพราะ [Terragrunt](/clouddeploy/th/terragrunt/) และ interface ระหว่างพวกมันดูดซับความต่างของ cloud ทุกอย่าง
+
+network เสร็จแล้วและ output ของมันเสถียรข้ามทั้งสาม cloud นั่นคือสิ่งที่ layer ถัดไปต้องการเป๊ะ: [Managed Kubernetes →](/clouddeploy/th/kubernetes/) consume `network_id` และ `private_subnet_ids` เพื่อวาง cluster — และก็เหมือน network มันจะเป็น interface หนึ่งกับ implementation สาม
