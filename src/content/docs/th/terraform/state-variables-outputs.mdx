@@ -1,0 +1,151 @@
+---
+title: State, variables & outputs
+description: "เข้าใจว่า Terraform state คืออะไรและทำไมมันสำคัญ แล้ว parameterize resource ด้วย variable, expose มันด้วย output, และอ่านโลกด้วย data source"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+เราจะ refactor AWS scratch resource จากบทที่แล้วให้เป็นอะไรที่ reusable — input เป็น **variables**, ผลลัพธ์เป็น **outputs**, และ **data source** ไว้อ่านสิ่งที่ Terraform ไม่ได้สร้าง ระหว่างทางเราจะเพ่งดูไฟล์ที่ผูกทุกอย่างเข้าด้วยกัน: **state**
+
+state คือ concept ที่เงียบที่สุดและมีผลกระทบมากที่สุดใน Terraform เข้าใจมันคือสิ่งที่ทำให้การกระโดดไป remote state และ locking (Module 3) เข้าท่า แทนที่จะรู้สึกเหมือนพิธีกรรม
+
+## Why
+
+state file ของ Terraform (`terraform.tfstate`) คือ map จาก configuration ของคุณไปยัง resource จริงที่มันสร้าง เมื่อคุณเขียน `aws_s3_bucket.first` state จำไว้ว่าชื่อนั้นชี้ไปที่ bucket `clouddeploy-first-a1b2c3d4` ใน AWS ถ้าไม่มีมัน Terraform บอกไม่ได้ว่า "สร้าง bucket ใหม่" ต่างจาก "bucket นี้มีอยู่แล้ว" อย่างไร — ทุก `plan` เริ่มด้วยการเทียบ *config* กับ *state* กับ *ความจริง*
+
+นั่นมีผลตามมาทันทีสองอย่างที่คอร์สนี้สร้างอยู่รอบ ๆ อย่างแรก **state คือความจริงที่แชร์กัน**: ถ้าสองคน (หรือคนกับ CI job) apply ทับ local file ตัวเดียวกัน พวกเขาทับกันเอง — นั่นคือเหตุผลที่ Module 3 ย้ายมันไปที่ locked remote backend อย่างที่สอง **state เก็บ secret เป็น plaintext**: database password โผล่ใน `terraform.tfstate` เป็น clear text ซึ่งเป็นอีกเหตุผลที่มันควรอยู่ใน encrypted backend ไม่ใช่บน laptop
+
+**Variables** parameterize configuration ให้โค้ดชุดเดียวรับ input ต่างกันได้; **outputs** คือ contract สาธารณะของมัน — ค่าที่ configuration อื่น (และ Terragrunt dependency) ดึงไปใช้ **Data sources** อ่าน infrastructure ที่มีอยู่โดยไม่จัดการมัน
+
+## Pros & cons
+
+**output เป็น contract ของ module เทียบกับการเอื้อมเข้าไปหยิบไส้ในของ resource:**
+
+- **Pros:** output คือ surface ที่นิ่งและตั้งใจ เมื่อ `live/aws/cluster` ต้องการ subnet ID ของ network มันอ่าน `dependency.network.outputs.private_subnet_ids` — ชื่อที่คุณเลือกเอง — ไม่ใช่ attribute ลึก ๆ ของ resource ที่อาจโดน refactor หายไป
+- **Cons:** คุณต้องออกแบบมัน output ที่คุณลืม expose จะ block consumer ปลายน้ำจนกว่าคุณจะเพิ่มมันแล้ว apply ใหม่ นั่นคือ feature: มันบังคับให้ interface ชัดเจน
+
+**local state (ตอนนี้) เทียบกับ remote state (Module 3):**
+
+- **Pros of local:** ตั้งค่าเป็นศูนย์ ไฟล์เดียวบน disk, ตรวจได้ทันที, เหมาะสำหรับการทดลองคนเดียว
+- **Cons of local:** ไม่มีการแชร์, ไม่มี locking, secret นั่งอยู่แบบไม่ encrypt ใน working directory ของคุณ, และ `rm` เดียวก็เสียบันทึกเดียวของสิ่งที่มีอยู่ ใช้กับ `scratch/` ได้; ยอมรับไม่ได้สำหรับ platform จริง — ซึ่งเป็นเหตุผลทั้งหมดของ Module 3
+
+## Set it up
+
+ทำต่อใน `scratch/aws/` โดยแยก config เป็นไฟล์ตาม convention
+
+### 1. `variables.tf` — parameterize the inputs
+
+ให้แต่ละ variable มี type, default, และ — ตรงที่สำคัญ — validation:
+
+```hcl
+variable "name" {
+  description = "Name prefix for the bucket"
+  type        = string
+  default     = "clouddeploy-first"
+}
+
+variable "region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+
+  validation {
+    condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]$", var.region))
+    error_message = "Region must look like us-east-1."
+  }
+}
+```
+
+### 2. `main.tf` — use the variables
+
+```hcl
+provider "aws" {
+  region = var.region
+}
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+resource "aws_s3_bucket" "first" {
+  bucket = "${var.name}-${random_id.suffix.hex}"
+}
+```
+
+### 3. `data.tf` — read the world with a data source
+
+data source *อ่าน* มากกว่าสร้าง `aws_caller_identity` return ว่าคุณ authenticate เป็นใคร — สะดวกสำหรับการ tag หรือสร้างชื่อ unique:
+
+```hcl
+data "aws_caller_identity" "current" {}
+```
+
+### 4. `outputs.tf` — expose the contract
+
+```hcl
+output "bucket_name" {
+  description = "The created bucket's name"
+  value       = aws_s3_bucket.first.bucket
+}
+
+output "bucket_arn" {
+  description = "The created bucket's ARN"
+  value       = aws_s3_bucket.first.arn
+}
+
+output "account_id" {
+  description = "The AWS account this was deployed to"
+  value       = data.aws_caller_identity.current.account_id
+}
+```
+
+ทำเครื่องหมาย output ที่เป็นความลับจริง ๆ ด้วย `sensitive = true` (คุณจะทำแบบนี้กับ database password ใน Module 7) — Terraform จะ redact มันจาก log ของ `plan`/`apply` มัน**ไม่** encrypt มันใน state ซึ่งเป็นประเด็นที่ผลักไปสู่ remote state ต่อไป
+
+## Verify
+
+apply แล้วตรวจ state และ output:
+
+```bash
+terraform init
+terraform apply     # Apply complete! Resources: 2 added.
+
+terraform output                # all outputs
+terraform output bucket_name    # one output
+terraform output -json          # machine-readable, for scripting
+```
+
+```text
+account_id  = "123456789012"
+bucket_arn  = "arn:aws:s3:::clouddeploy-first-a1b2c3d4"
+bucket_name = "clouddeploy-first-a1b2c3d4"
+```
+
+ตอนนี้ดูว่า state ติดตามอะไรอยู่ และพิสูจน์ว่า state ตรงกับความจริง:
+
+```bash
+terraform state list            # aws_s3_bucket.first, random_id.suffix, ...
+terraform plan                  # No changes. Your infrastructure matches the configuration.
+```
+
+`No changes` นั่นคือแก่นทั้งหมด: `plan` เทียบ config → state → cloud จริงแล้วพบว่ามันเหมือนกัน เปลี่ยน `var.name`, รัน `plan` อีกครั้ง, แล้วดู Terraform เสนอ replace bucket จากนั้นเก็บกวาด:
+
+```bash
+terraform destroy
+```
+
+คุณเสร็จเมื่อ `terraform output` พิมพ์ค่าทั้งสามของคุณและ `plan` ใหม่รายงาน **No changes** — พิสูจน์ว่า state คือ map ที่แม่นยำของความจริง
+
+**ตรวจสอบความเข้าใจ:**
+
+1. state file map ระหว่างอะไรกับอะไร และทำไม Terraform บอก "create" ต่างจาก "already exists" ไม่ได้ถ้าไม่มีมัน?
+2. ให้เหตุผลรูปธรรมสองข้อว่าทำไม local state ยอมรับไม่ได้สำหรับ platform จริงที่แชร์กัน
+3. ทำไม output ของ module ถึงเป็น dependency surface ที่ดีกว่าการเอื้อมเข้าไปหา attribute ของ resource ตรง ๆ?
+4. `sensitive = true` encrypt ค่าใน state ไหม? ถ้าไม่ มันแก้ปัญหาอะไรจริง ๆ และอะไรแก้ปัญหาการ encrypt?
+
+## Recap
+
+ตอนนี้คุณรู้แล้วว่า state คืออะไร, ทำไมมันเป็นแหล่งความจริง, และทำไมการเก็บมันเป็น local โอเคสำหรับ scratchpad แต่ผิดสำหรับ platform คุณ parameterize resource ด้วย variable, ให้มันมี output contract ที่สะอาด, และอ่านโลกด้วย data source แล้ว output พวกนั้นคือสิ่งที่ Terragrunt จะต่อสายเข้าด้วยกันเป็น dependency ข้ามสาม cloud — ซึ่งเป็นที่ที่เราจะไปต่อ
+
+Next: [Terragrunt & Remote State →](/clouddeploy/th/terragrunt/)

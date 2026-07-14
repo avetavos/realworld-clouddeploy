@@ -1,0 +1,161 @@
+---
+title: Providers & resources
+description: "Configure the aws, google, and azurerm providers, create a first tiny resource on each cloud, and run the init / plan / apply loop."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+One tiny resource on each cloud, in plain Terraform — no Terragrunt yet. An S3 bucket on AWS, a Cloud Storage bucket on GCP, and a resource group on Azure. Each is nearly free, quick to destroy, and enough to exercise the whole loop: declare a **provider**, declare a **resource**, then `init`, `plan`, and `apply`.
+
+We're using bare Terraform on purpose. Seeing three almost-identical provider blocks by hand is what makes Module 3's Terragrunt feel like a relief rather than a mystery.
+
+## Why
+
+A **provider** is the plugin that translates HCL into a cloud's API — `aws`, `google`, `azurerm`. You pin its version in a `required_providers` block so a colleague (or a CI run six months from now) gets the same behavior you did, and you configure it (region, project, subscription) in a `provider` block. A **resource** is one thing that provider manages: a bucket, a network, a database.
+
+The `init`/`plan`/`apply` loop is the heartbeat of Terraform. `init` downloads the pinned providers; `plan` diffs your config against reality and shows exactly what will change; `apply` makes it so. You'll run that loop thousands of times — learn to trust the plan, and never apply one you haven't read.
+
+## Pros & cons
+
+**Pinning providers with `~>` vs. taking whatever's latest:**
+
+- **Pros:** Reproducible. `~> 6.0` accepts 6.x bug fixes but never a breaking 7.0, so `apply` does the same thing on every machine and in CI.
+- **Cons:** You own the upgrades. Bumping a major means reading an upgrade guide and re-testing — but an unpinned provider that silently jumps a major is far worse.
+
+**Plain Terraform per cloud (this lesson) vs. jumping straight to Terragrunt:**
+
+- **Pros:** You learn the engine directly — providers, state, the plan — with nothing between you and the API. When something breaks later, you know which layer to blame.
+- **Cons:** It's repetitive. Three provider blocks, three backends, three copies of the same settings. That repetition is the problem Terragrunt exists to solve, and you'll feel it by the end of this module.
+
+## Set it up
+
+These are throwaway experiments, so keep them out of the real tree — a `scratch/` directory you'll delete before Module 4 builds the actual modules.
+
+### 1. `scratch/aws/main.tf` — the AWS provider + an S3 bucket
+
+Bucket names are globally unique, so we suffix a random string:
+
+```hcl
+terraform {
+  required_providers {
+    aws    = { source = "hashicorp/aws", version = "~> 6.0" }
+    random = { source = "hashicorp/random", version = "~> 3.6" }
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+resource "aws_s3_bucket" "first" {
+  bucket = "clouddeploy-first-${random_id.suffix.hex}"
+}
+```
+
+### 2. `scratch/gcp/main.tf` — the Google provider + a Cloud Storage bucket
+
+```hcl
+terraform {
+  required_providers {
+    google = { source = "hashicorp/google", version = "~> 6.0" }
+    random = { source = "hashicorp/random", version = "~> 3.6" }
+  }
+}
+
+provider "google" {
+  project = "YOUR_GCP_PROJECT_ID"
+  region  = "us-central1"
+}
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+resource "google_storage_bucket" "first" {
+  name                        = "clouddeploy-first-${random_id.suffix.hex}"
+  location                    = "US-CENTRAL1"
+  uniform_bucket_level_access = true
+  force_destroy               = true
+}
+```
+
+### 3. `scratch/azure/main.tf` — the azurerm provider + a resource group
+
+The azurerm v4 provider requires a `features {}` block and a subscription. The provider reads `ARM_SUBSCRIPTION_ID` from the environment, so you don't hardcode it:
+
+```hcl
+terraform {
+  required_providers {
+    azurerm = { source = "hashicorp/azurerm", version = "~> 4.0" }
+  }
+}
+
+provider "azurerm" {
+  features {}
+  # subscription_id comes from the ARM_SUBSCRIPTION_ID env var,
+  # or set it here explicitly.
+}
+
+resource "azurerm_resource_group" "first" {
+  name     = "clouddeploy-first"
+  location = "eastus"
+}
+```
+
+```bash
+export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+```
+
+Every one of these authenticates with the CLI credentials you set up in Module 1 — no keys in these files.
+
+## Verify
+
+Run the loop in each directory. AWS shown; GCP and Azure are identical commands:
+
+```bash
+cd scratch/aws
+terraform init      # Terraform has been successfully initialized!
+terraform plan      # Plan: 2 to add, 0 to change, 0 to destroy.
+terraform apply     # type 'yes' when prompted
+```
+
+A successful apply ends with:
+
+```text
+Apply complete! Resources: 2 added, 0 changed, 0 destroyed.
+```
+
+Now confirm the resources really exist, straight from the cloud CLIs:
+
+```bash
+aws s3 ls | grep clouddeploy-first
+gcloud storage buckets list --filter="name:clouddeploy-first"
+az group show --name clouddeploy-first --query name -o tsv
+```
+
+Then tear them down so nothing lingers on the bill:
+
+```bash
+terraform destroy   # Destroy complete! Resources: 2 destroyed.
+```
+
+You're done when all three clouds went from `plan` → `apply` → a CLI-confirmed resource → clean `destroy`.
+
+**Check your understanding:**
+
+1. What's the difference between a `required_providers` block and a `provider` block?
+2. Why does `~> 6.0` protect you where a bare "use the latest" would eventually bite?
+3. What does `terraform plan` show you, and why should you never `apply` a plan you haven't read?
+4. None of these files contains a cloud credential — so how does each provider authenticate?
+
+## Recap
+
+You've configured all three providers, created and destroyed a first resource on each cloud, and run the `init`/`plan`/`apply` loop. You also felt the repetition — three provider blocks that differ only in the details. Before we fix that with Terragrunt, we need to understand the thing Terraform tracks between applies: state. Next up, state, variables, and outputs.
+
+Next: [State, variables & outputs →](/clouddeploy/en/terraform/state-variables-outputs/)

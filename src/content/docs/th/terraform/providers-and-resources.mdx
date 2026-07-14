@@ -1,0 +1,161 @@
+---
+title: Providers & resources
+description: "ตั้งค่า provider aws, google, และ azurerm, สร้าง resource เล็ก ๆ ตัวแรกบนแต่ละ cloud, แล้วรัน loop init / plan / apply"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+resource เล็ก ๆ หนึ่งตัวบนแต่ละ cloud ด้วย Terraform ล้วน ๆ — ยังไม่มี Terragrunt S3 bucket บน AWS, Cloud Storage bucket บน GCP, และ resource group บน Azure แต่ละตัวเกือบฟรี, destroy ได้เร็ว, และเพียงพอจะซ้อมทั้ง loop: ประกาศ **provider**, ประกาศ **resource**, แล้ว `init`, `plan`, และ `apply`
+
+เราใช้ Terraform เปล่า ๆ โดยตั้งใจ การได้เห็น provider block เกือบเหมือนกันสามชุดด้วยมือคือสิ่งที่ทำให้ Terragrunt ใน Module 3 รู้สึกเหมือนโล่งอกมากกว่าจะเป็นเรื่องลึกลับ
+
+## Why
+
+**provider** คือ plugin ที่แปล HCL ให้เป็น API ของ cloud — `aws`, `google`, `azurerm` คุณ pin version มันใน block `required_providers` เพื่อให้เพื่อนร่วมงาน (หรือ CI run อีกหกเดือนข้างหน้า) ได้พฤติกรรมเดียวกับคุณ แล้วตั้งค่ามัน (region, project, subscription) ใน block `provider` **resource** คือสิ่งหนึ่งที่ provider นั้นจัดการ: bucket, network, database
+
+loop `init`/`plan`/`apply` คือหัวใจที่เต้นของ Terraform `init` download provider ที่ pin ไว้; `plan` diff config ของคุณกับความจริงแล้วแสดงว่าอะไรจะเปลี่ยนบ้าง; `apply` ทำให้มันเกิดขึ้น คุณจะรัน loop นั้นเป็นพัน ๆ ครั้ง — หัดเชื่อ plan และอย่า apply plan ที่คุณยังไม่ได้อ่าน
+
+## Pros & cons
+
+**pin provider ด้วย `~>` เทียบกับเอาอะไรก็ตามที่ใหม่สุด:**
+
+- **Pros:** reproducible ได้ `~> 6.0` รับ bug fix 6.x แต่ไม่รับ breaking 7.0 `apply` จึงทำสิ่งเดียวกันบนทุกเครื่องและใน CI
+- **Cons:** คุณเป็นเจ้าของการ upgrade เอง ดัน major หมายถึงต้องอ่าน upgrade guide แล้ว test ใหม่ — แต่ provider ที่ไม่ pin แล้วกระโดดข้าม major เงียบ ๆ แย่กว่ามาก
+
+**Terraform เปล่าต่อ cloud (บทนี้) เทียบกับกระโดดไป Terragrunt เลย:**
+
+- **Pros:** คุณเรียน engine ตรง ๆ — provider, state, plan — โดยไม่มีอะไรคั่นระหว่างคุณกับ API เมื่อมีอะไรพังทีหลัง คุณรู้ว่าต้องโทษชั้นไหน
+- **Cons:** มันซ้ำซาก provider block สามชุด, backend สามชุด, setting เดียวกันสามสำเนา ความซ้ำนั้นคือปัญหาที่ Terragrunt มีอยู่เพื่อแก้ และคุณจะรู้สึกมันตอนจบ module นี้
+
+## Set it up
+
+พวกนี้เป็นการทดลองใช้แล้วทิ้ง เก็บมันไว้นอก tree จริง — directory `scratch/` ที่คุณจะลบก่อน Module 4 สร้าง module จริง
+
+### 1. `scratch/aws/main.tf` — the AWS provider + an S3 bucket
+
+ชื่อ bucket unique ทั้งโลก เราจึงต่อท้ายด้วย random string:
+
+```hcl
+terraform {
+  required_providers {
+    aws    = { source = "hashicorp/aws", version = "~> 6.0" }
+    random = { source = "hashicorp/random", version = "~> 3.6" }
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+resource "aws_s3_bucket" "first" {
+  bucket = "clouddeploy-first-${random_id.suffix.hex}"
+}
+```
+
+### 2. `scratch/gcp/main.tf` — the Google provider + a Cloud Storage bucket
+
+```hcl
+terraform {
+  required_providers {
+    google = { source = "hashicorp/google", version = "~> 6.0" }
+    random = { source = "hashicorp/random", version = "~> 3.6" }
+  }
+}
+
+provider "google" {
+  project = "YOUR_GCP_PROJECT_ID"
+  region  = "us-central1"
+}
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+resource "google_storage_bucket" "first" {
+  name                        = "clouddeploy-first-${random_id.suffix.hex}"
+  location                    = "US-CENTRAL1"
+  uniform_bucket_level_access = true
+  force_destroy               = true
+}
+```
+
+### 3. `scratch/azure/main.tf` — the azurerm provider + a resource group
+
+azurerm provider v4 ต้องมี block `features {}` และ subscription provider อ่าน `ARM_SUBSCRIPTION_ID` จาก environment คุณจึงไม่ต้อง hardcode มัน:
+
+```hcl
+terraform {
+  required_providers {
+    azurerm = { source = "hashicorp/azurerm", version = "~> 4.0" }
+  }
+}
+
+provider "azurerm" {
+  features {}
+  # subscription_id comes from the ARM_SUBSCRIPTION_ID env var,
+  # or set it here explicitly.
+}
+
+resource "azurerm_resource_group" "first" {
+  name     = "clouddeploy-first"
+  location = "eastus"
+}
+```
+
+```bash
+export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+```
+
+ทุกตัวในนี้ authenticate ด้วย CLI credential ที่คุณตั้งไว้ใน Module 1 — ไม่มี key ในไฟล์พวกนี้เลย
+
+## Verify
+
+รัน loop ในแต่ละ directory แสดง AWS ไว้; GCP และ Azure ใช้คำสั่งเหมือนกัน:
+
+```bash
+cd scratch/aws
+terraform init      # Terraform has been successfully initialized!
+terraform plan      # Plan: 2 to add, 0 to change, 0 to destroy.
+terraform apply     # type 'yes' when prompted
+```
+
+apply ที่สำเร็จจบด้วย:
+
+```text
+Apply complete! Resources: 2 added, 0 changed, 0 destroyed.
+```
+
+ตอนนี้ยืนยันว่า resource มีอยู่จริง ตรงจาก cloud CLIs:
+
+```bash
+aws s3 ls | grep clouddeploy-first
+gcloud storage buckets list --filter="name:clouddeploy-first"
+az group show --name clouddeploy-first --query name -o tsv
+```
+
+แล้วรื้อมันทิ้งเพื่อไม่ให้อะไรค้างบนบิล:
+
+```bash
+terraform destroy   # Destroy complete! Resources: 2 destroyed.
+```
+
+คุณเสร็จเมื่อทั้งสาม cloud ไปจาก `plan` → `apply` → resource ที่ CLI ยืนยันแล้ว → `destroy` สะอาด
+
+**ตรวจสอบความเข้าใจ:**
+
+1. block `required_providers` กับ block `provider` ต่างกันอย่างไร?
+2. ทำไม `~> 6.0` ถึงปกป้องคุณในจุดที่ "ใช้ตัวล่าสุด" เปล่า ๆ จะกัดคุณในที่สุด?
+3. `terraform plan` แสดงอะไรให้คุณ และทำไมคุณไม่ควร `apply` plan ที่คุณยังไม่ได้อ่าน?
+4. ไม่มีไฟล์ไหนในนี้เก็บ credential ของ cloud เลย — แล้วแต่ละ provider authenticate อย่างไร?
+
+## Recap
+
+คุณตั้งค่า provider ทั้งสามแล้ว, สร้างและ destroy resource ตัวแรกบนแต่ละ cloud, และรัน loop `init`/`plan`/`apply` คุณยังได้รู้สึกถึงความซ้ำ — provider block สามชุดที่ต่างกันแค่รายละเอียด ก่อนเราจะแก้มันด้วย Terragrunt เราต้องเข้าใจสิ่งที่ Terraform จำไว้ระหว่าง apply แต่ละครั้งก่อน: state ต่อไปคือ state, variable, และ output
+
+Next: [State, variables & outputs →](/clouddeploy/th/terraform/state-variables-outputs/)

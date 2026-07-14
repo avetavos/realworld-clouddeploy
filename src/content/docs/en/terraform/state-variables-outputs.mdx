@@ -1,0 +1,151 @@
+---
+title: State, variables & outputs
+description: "Understand what Terraform state is and why it matters, then parameterize a resource with variables, expose it with outputs, and read the world with a data source."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+We'll refactor the AWS scratch resource from the previous lesson into something reusable — inputs as **variables**, results as **outputs**, and a **data source** to read something Terraform didn't create. Along the way we'll look hard at the file that ties it all together: **state**.
+
+State is the quietest and most consequential concept in Terraform. Understanding it is what makes the jump to remote state and locking (Module 3) make sense instead of feeling like ceremony.
+
+## Why
+
+Terraform's state file (`terraform.tfstate`) is a map from your configuration to the real resources it created. When you write `aws_s3_bucket.first`, state remembers that name points at bucket `clouddeploy-first-a1b2c3d4` in AWS. Without it, Terraform couldn't tell "create a new bucket" from "this bucket already exists" — every `plan` starts by comparing *config* to *state* to *reality*.
+
+That has two immediate consequences this course is built around. First, **state is shared truth**: if two people (or a person and a CI job) apply against the same local file, they clobber each other — which is why Module 3 moves it to a locked remote backend. Second, **state holds secrets in plaintext**: a database password shows up in `terraform.tfstate` as clear text, which is another reason it belongs in an encrypted backend, not on a laptop.
+
+**Variables** parameterize a configuration so the same code serves different inputs; **outputs** are its public contract — the values other configurations (and Terragrunt dependencies) consume. **Data sources** read existing infrastructure without managing it.
+
+## Pros & cons
+
+**Outputs as a module's contract vs. reaching into a resource's internals:**
+
+- **Pros:** Outputs are a stable, intentional surface. When `live/aws/cluster` needs the network's subnet IDs, it reads `dependency.network.outputs.private_subnet_ids` — a name you chose — not some deep resource attribute that might get refactored away.
+- **Cons:** You have to design them. An output you forgot to expose blocks a downstream consumer until you add it and re-apply. That's a feature: it forces the interface to be explicit.
+
+**Local state (now) vs. remote state (Module 3):**
+
+- **Pros of local:** Zero setup. One file on disk, instant to inspect, perfect for a solo experiment.
+- **Cons of local:** No sharing, no locking, secrets sit unencrypted in your working directory, and one `rm` loses the only record of what exists. Fine for `scratch/`; unacceptable for a real platform — which is the whole argument for Module 3.
+
+## Set it up
+
+Continue in `scratch/aws/`, splitting the config into conventional files.
+
+### 1. `variables.tf` — parameterize the inputs
+
+Give each variable a type, a default, and — where it matters — validation:
+
+```hcl
+variable "name" {
+  description = "Name prefix for the bucket"
+  type        = string
+  default     = "clouddeploy-first"
+}
+
+variable "region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+
+  validation {
+    condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]$", var.region))
+    error_message = "Region must look like us-east-1."
+  }
+}
+```
+
+### 2. `main.tf` — use the variables
+
+```hcl
+provider "aws" {
+  region = var.region
+}
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+resource "aws_s3_bucket" "first" {
+  bucket = "${var.name}-${random_id.suffix.hex}"
+}
+```
+
+### 3. `data.tf` — read the world with a data source
+
+A data source *reads* rather than creates. `aws_caller_identity` returns who you're authenticated as — handy for tagging or building unique names:
+
+```hcl
+data "aws_caller_identity" "current" {}
+```
+
+### 4. `outputs.tf` — expose the contract
+
+```hcl
+output "bucket_name" {
+  description = "The created bucket's name"
+  value       = aws_s3_bucket.first.bucket
+}
+
+output "bucket_arn" {
+  description = "The created bucket's ARN"
+  value       = aws_s3_bucket.first.arn
+}
+
+output "account_id" {
+  description = "The AWS account this was deployed to"
+  value       = data.aws_caller_identity.current.account_id
+}
+```
+
+Mark truly secret outputs `sensitive = true` (you'll do this for the database password in Module 7) — Terraform then redacts them from `plan`/`apply` logs. It does **not** encrypt them in state, which is the point that drives remote state next.
+
+## Verify
+
+Apply, then inspect state and outputs:
+
+```bash
+terraform init
+terraform apply     # Apply complete! Resources: 2 added.
+
+terraform output                # all outputs
+terraform output bucket_name    # one output
+terraform output -json          # machine-readable, for scripting
+```
+
+```text
+account_id  = "123456789012"
+bucket_arn  = "arn:aws:s3:::clouddeploy-first-a1b2c3d4"
+bucket_name = "clouddeploy-first-a1b2c3d4"
+```
+
+Now look at what state is tracking, and prove state matches reality:
+
+```bash
+terraform state list            # aws_s3_bucket.first, random_id.suffix, ...
+terraform plan                  # No changes. Your infrastructure matches the configuration.
+```
+
+That `No changes` is the whole idea: `plan` compared config → state → the live cloud and found them identical. Change `var.name`, run `plan` again, and watch Terraform propose replacing the bucket. Then clean up:
+
+```bash
+terraform destroy
+```
+
+You're done when `terraform output` prints your three values and a fresh `plan` reports **No changes** — proof that state is an accurate map of reality.
+
+**Check your understanding:**
+
+1. What does the state file map between, and why can't Terraform tell "create" from "already exists" without it?
+2. Give two concrete reasons local state is unacceptable for a shared, real platform.
+3. Why are a module's outputs a better dependency surface than reaching directly into resource attributes?
+4. Does `sensitive = true` encrypt a value in state? If not, what problem does it actually solve, and what solves the encryption problem?
+
+## Recap
+
+You now know what state is, why it's the source of truth, and why keeping it local is fine for a scratchpad but wrong for a platform. You've parameterized a resource with variables, given it a clean output contract, and read the world with a data source. Those outputs are exactly what Terragrunt will wire together as dependencies across three clouds — which is where we go next.
+
+Next: [Terragrunt & Remote State →](/clouddeploy/en/terragrunt/)
