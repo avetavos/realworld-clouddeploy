@@ -1,0 +1,145 @@
+---
+title: The repo layout
+description: "วาง tree ของ modules/ และ live/{aws,gcp,azure}/, โครง root.hcl, แล้วตัดสินใจว่าอะไรควรอยู่ใน module เทียบกับ live directory"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+โครงของทั้งโปรเจกต์: tree `modules/` ของ Terraform แบบ reusable ที่เจาะจงต่อ cloud, tree `live/` ที่มีหนึ่ง directory ต่อ cloud คอยขับ module พวกนั้นผ่าน Terragrunt, บวก `charts/` สำหรับ Helm และ `.github/workflows/` สำหรับ CI ยังไม่มี resource — แค่รูปทรงที่ module บทถัด ๆ ไปจะเติมเข้ามา
+
+layout ไม่ใช่แค่เรื่องหน้าตา มันเข้ารหัสการตัดสินใจที่สำคัญที่สุดของโปรเจกต์: **module อธิบายว่า infrastructure ชิ้นหนึ่ง *คืออะไร*; tree `live/` อธิบายว่ามันรัน *ที่ไหน* และ *ด้วย input อะไร*** แบ่งตรงนี้ให้ถูกแล้วสาม cloud ยังจัดการไหว แบ่งผิดแล้วคุณจะได้ทุกอย่างสามชุด
+
+## Why
+
+Terraform module ตอบคำถาม "network คืออะไร?" ครั้งเดียว โดยเก็บรายละเอียดเจาะจงต่อ cloud ไว้ข้างใน — VPC บน AWS, VNet บน Azure `live/` directory ตอบว่า "cloud ไหน, region ไหน, CIDR ไหน?" การแยกแบบนั้นคือสิ่งที่ทำให้ `live/aws/network`, `live/gcp/network`, และ `live/azure/network` เรียก module *รูปทรงเดียวกัน* ด้วย input ต่างกันได้ แทนที่จะ duplicate โค้ด resource สามครั้ง
+
+Terragrunt คือกาวใน `live/` `root.hcl` ตัวเดียวต่อ cloud เก็บ setting ที่ทุก unit ใช้ร่วมกัน — provider configuration และ remote-state backend — แล้วแต่ละ unit ก็ `include` มัน นั่นคือชัยชนะ DRY ที่ Module 3 จะแกะให้ดู ตรงนี้เราแค่เจียดพื้นที่ไว้ให้มัน
+
+## Pros & cons
+
+**การแบ่ง `modules/` + `live/` เทียบกับ Terraform tree แบน ๆ ตัวเดียวต่อ cloud:**
+
+- **Pros:** module เขียนและ test ครั้งเดียว แล้วนำกลับมาใช้ tree `live/` ผอมอยู่ — ส่วนใหญ่เป็น input กับการต่อสาย dependency — diff ของ "เพิ่ม region ที่สอง" หรือ "ดัน node count" จึงเล็กและอ่านง่าย
+- **Cons:** อ้อมมากขึ้น จะเข้าใจว่า `live/aws/cluster` สร้างอะไรจริง ๆ คุณต้องตาม `source` เข้าไปที่ `modules/aws/cluster` การกระโดดนั้นคือราคาของการ reuse และมันคุ้มทันทีที่คุณมีผู้เรียกมากกว่าหนึ่งราย
+
+**module directory แยกต่อ cloud (`modules/aws`, `modules/gcp`, `modules/azure`) เทียบกับ module เดียวที่ branch ด้วย `count`/`for_each` ต่อ cloud:**
+
+- **Pros:** implementation ของแต่ละ cloud วิวัฒน์อิสระและอ่านสะอาด — ไฟล์ EKS ไม่พันกับ conditional ของ GKE provider, ชื่อ resource, และพฤติกรรมเฉพาะตัวแยกกันชัด
+- **Cons:** มี duplication จริงบ้างข้ามทั้งสาม (ชื่อ variable, รูปทรง output) เรายอมรับมันโดยตั้งใจ: *interface* เหมือนกัน (ตั้งแต่ Module 4 เป็นต้นไป) ต่างแค่ไส้ใน และไฟล์ที่ชัดเจนดีกว่าไฟล์ที่ฉลาดเกินตัว
+
+## Set it up
+
+### 1. `modules/` — reusable, cloud-specific implementations
+
+subtree ละหนึ่งต่อ cloud แต่ละอันมี module สี่ตัวเหมือนกัน ทุก module ชนิดเดียวกัน expose **input และ output เดียวกัน** บนทั้งสาม cloud — ต่างแค่ implementation
+
+```bash
+mkdir -p modules/{aws,gcp,azure}/{network,cluster,data,iam}
+```
+
+interface convention (สร้างเต็มใน module บทหลัง) คือ:
+
+- **network** — in: `name`, `cidr`. out: `network_id`, `private_subnet_ids`, `public_subnet_ids`.
+- **cluster** — in: `name`, `network_id`, `subnet_ids`, `node_count`, `node_size`. out: `cluster_name`, `cluster_endpoint`, `cluster_ca`.
+- **data** — in: `name`, `network_id`, `subnet_ids`, `db_name`. out: `db_host`, `db_port`, `db_name`, `db_user`, `db_password` (sensitive).
+- **iam** — in: `cluster_name`, `namespace`, `service_account`. out: the workload-identity binding id.
+
+### 2. `live/{aws,gcp,azure}/` — the per-cloud config tree
+
+แต่ละ cloud ได้ `root.hcl` หนึ่งตัวและหนึ่ง directory ต่อ unit **unit** คือ state ที่ deploy ได้หนึ่งชิ้น — มี `terragrunt.hcl` ของตัวเองที่ชี้ไปที่ module และป้อน input
+
+```bash
+mkdir -p live/{aws,gcp,azure}/{network,cluster,data,platform,shopmicro}
+```
+
+- `network`, `cluster`, `data`, `iam` → ชั้นที่เจาะจงต่อ cloud แต่ละตัวเรียก module ของมันใน `modules/<cloud>/`
+- `platform` → ชั้น Helm ที่ *เป็นกลาง* ต่อ cloud (Datadog, Keycloak, GrowthBook)
+- `shopmicro` → workload คือ `helm_release` ของ ShopMicro chart
+
+### 3. `live/<cloud>/root.hcl` — the shared root
+
+root คือที่อยู่ของ setting เจาะจงต่อ cloud ที่ทุก unit ต้องใช้ นี่คือโครง AWS — block `remote_state` และ `generate "provider"` มีรายละเอียดใน Module 3 ดังนั้นถือว่าอันนี้เป็นรูปทรง ไม่ใช่ของสำเร็จ:
+
+```hcl
+# live/aws/root.hcl
+remote_state {
+  backend  = "s3"
+  generate = { path = "backend.tf", if_exists = "overwrite_terragrunt" }
+  config = {
+    bucket         = "clouddeploy-tfstate-aws"
+    key            = "${path_relative_to_include()}/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "clouddeploy-locks"
+  }
+}
+
+generate "provider" {
+  path      = "provider.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<EOF
+provider "aws" {
+  region = "us-east-1"
+}
+EOF
+}
+```
+
+`live/gcp/root.hcl` และ `live/azure/root.hcl` เป็นแบบเดียวกัน แค่สลับ backend (`gcs` / `azurerm`) และ provider ที่ generate ออกมา region ทั้งสามถูกกำหนดตายตัวสำหรับคอร์ส: AWS `us-east-1`, GCP `us-central1`, Azure `eastus`
+
+### 4. `charts/` and `.github/workflows/`
+
+```bash
+mkdir -p charts .github/workflows
+```
+
+`charts/` เก็บ Helm values และ ShopMicro chart; `.github/workflows/` เก็บ CI/CD จาก Module 12 ตอนนี้ว่างเปล่า — เป็น placeholder เพื่อให้โครงสร้างครบ
+
+## Verify
+
+ยืนยันว่า tree มีอยู่และ root parse ได้:
+
+```bash
+find modules live -type d | sort
+```
+
+```text
+live/aws
+live/aws/cluster
+live/aws/data
+live/aws/network
+live/aws/platform
+live/aws/shopmicro
+live/gcp
+...
+modules/aws/cluster
+modules/aws/data
+modules/aws/iam
+modules/aws/network
+...
+```
+
+จากนั้นเช็คว่า Terragrunt เห็น HCL root ที่ valid:
+
+```bash
+cd live/aws
+terragrunt --version          # terragrunt version vX.Y.Z
+terragrunt hcl fmt --check     # exits 0 if root.hcl is well-formatted
+```
+
+ยังไม่มี module ต่อสายไว้ จึงยังไม่มีอะไรให้ `plan` — นั่นคือ Module 2 ที่คุณจะยืน resource จริงตัวแรกขึ้นมา คุณเสร็จตรงนี้เมื่อ tree ของ directory ตรงกับ layout ข้างบนและ `root.hcl` format ได้สะอาด
+
+**ตรวจสอบความเข้าใจ:**
+
+1. อธิบายอย่างละหนึ่งประโยค: `modules/` directory เป็นเจ้าของอะไร และ `live/` directory เป็นเจ้าของอะไร?
+2. ทำไมการเก็บ *interface* ของ module ให้เหมือนกันข้าม cloud ถึงสำคัญกว่าการเก็บ implementation ให้เหมือนกัน?
+3. "unit" ใน tree `live/` คืออะไร และทำไมแต่ละตัวถึงได้ `terragrunt.hcl` ของตัวเอง?
+4. `root.hcl` รวมศูนย์ setting สองตัวไหนให้ทุก unit ใน cloud และถ้าไม่มีมันคุณต้อง copy-paste อะไร?
+
+## Recap
+
+ตอนนี้ repository มีที่อยู่ให้ทุก module, live configuration ของทุก cloud, Helm charts, และ CI การแบ่ง `modules/` เทียบกับ `live/` — *อะไร* เทียบกับ *ที่ไหน* — คือกระดูกสันหลังที่ทุกอย่างเกาะ ต่อไปเราจะทิ้งโครงไว้ข้างหลังแล้วให้ Terraform ทำอะไรสักอย่างจริง ๆ: provider, resource ตัวแรกบนแต่ละ cloud, และ loop `init`/`plan`/`apply`
+
+Next: [Terraform Foundations →](/clouddeploy/th/terraform/)

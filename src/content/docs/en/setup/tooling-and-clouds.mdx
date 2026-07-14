@@ -1,0 +1,124 @@
+---
+title: Tooling & clouds
+description: "Install Terraform, Terragrunt, and the AWS, GCP, and Azure CLIs, authenticate to all three, and set billing alerts before you provision anything."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+No infrastructure yet — this lesson builds the *workbench*. By the end you'll have Terraform and Terragrunt installed, the AWS, GCP, and Azure CLIs authenticated to real accounts, and a billing alert on each cloud so a forgotten cluster can't quietly drain your card.
+
+That last part matters more here than in a single-cloud course. CloudDeploy runs three managed Kubernetes clusters and three managed databases; the whole point of Module 1 is to make the cost visible *before* Module 5 makes it real.
+
+## Why
+
+Terraform is the engine — it turns declarative `.tf` files into API calls against a cloud. Terragrunt sits one layer up: it keeps the configuration DRY across three clouds and wires remote state and locking so you're not copy-pasting the same backend block into a dozen directories. You need both installed from day one, even though Terragrunt doesn't earn its keep until Module 3.
+
+The three cloud CLIs do double duty. You'll use them to poke at resources by hand (`aws s3 ls`, `gcloud storage ls`, `az group list`), but more importantly, **Terraform authenticates the same way the CLIs do**. Log the AWS CLI into an account and the AWS provider picks up those credentials; run `gcloud auth application-default login` and the Google provider uses that. Authenticating the CLIs *is* authenticating Terraform.
+
+## Pros & cons
+
+**One IaC toolchain across three clouds vs. each cloud's native tool (CloudFormation / Deployment Manager / ARM/Bicep):**
+
+- **Pros:** One language (HCL), one workflow (`plan`/`apply`), one mental model. The provider abstraction means the *shape* of your code is identical whether you're talking to AWS or Azure — which is exactly what makes a three-cloud course tractable.
+- **Cons:** A provider is only ever as current as its maintainers make it; a brand-new cloud feature sometimes lands in the native tool first. And you own the toolchain — installing, pinning, and upgrading Terraform and the providers is now your job.
+
+**Short-lived CLI auth (SSO / ADC / `az login`) vs. long-lived static keys:**
+
+- **Pros:** Nothing durable sits on disk. Credentials expire, so a leaked laptop isn't a permanent breach, and you never paste an access key into a file that might end up in git.
+- **Cons:** Sessions expire mid-work and you re-authenticate. CI can't `az login` interactively, so Module 12 swaps this for OIDC federation — but for local development, short-lived is the right default.
+
+## Set it up
+
+### 1. Install Terraform and Terragrunt
+
+On macOS with Homebrew:
+
+```bash
+brew tap hashicorp/tap
+brew install hashicorp/tap/terraform
+brew install terragrunt
+```
+
+Terraform manages a real-world engine version; if you juggle projects, `tfenv` pins a version per repo. Terragrunt tracks Terraform closely — keep both reasonably current, since Terragrunt's newer command surface (below) assumes a recent Terraform.
+
+### 2. Install the three cloud CLIs
+
+```bash
+brew install awscli                       # AWS
+brew install --cask google-cloud-sdk      # GCP (gcloud)
+brew install azure-cli                    # Azure (az)
+```
+
+### 3. Authenticate to each cloud
+
+```bash
+# AWS — SSO is preferred; `aws configure` with an access key also works
+aws configure sso
+
+# GCP — log in AND set application-default credentials (what Terraform reads)
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project YOUR_GCP_PROJECT_ID
+
+# Azure — interactive login, then pick the subscription you'll deploy into
+az login
+az account set --subscription "YOUR_SUBSCRIPTION_NAME_OR_ID"
+```
+
+The Google provider reads *application-default* credentials, not the ones `gcloud auth login` sets for the CLI — that's why you run both. For Azure, note the subscription ID; the azurerm provider needs it (Module 2 wires it in).
+
+### 4. Set a billing alert on each cloud
+
+Three clusters plus three databases is real money. Cap the surprise before you spend a cent:
+
+```bash
+# GCP — create a budget with a threshold (via the console or gcloud billing)
+gcloud billing budgets create \
+  --billing-account=YOUR_BILLING_ACCOUNT_ID \
+  --display-name="clouddeploy-budget" \
+  --budget-amount=50USD \
+  --threshold-rule=percent=0.9
+```
+
+AWS Budgets (Billing console → **Budgets** → *Create budget*) and Azure Cost Management (**Cost Management** → *Budgets*) are quickest to set in their consoles — a monthly cost budget with an email alert at 80–90% is enough. Do all three now.
+
+## Verify
+
+Confirm every tool works and every identity resolves:
+
+```bash
+terraform -version      # Terraform vX.Y.Z
+terragrunt -version     # terragrunt version vX.Y.Z
+
+aws sts get-caller-identity     # → your AWS account + ARN
+gcloud auth list                # → your active GCP account (marked *)
+az account show                 # → your Azure subscription JSON
+```
+
+Each of the three identity commands should return *you*, authenticated:
+
+```json
+// aws sts get-caller-identity
+{
+  "UserId": "AIDA...",
+  "Account": "123456789012",
+  "Arn": "arn:aws:iam::123456789012:user/you"
+}
+```
+
+You're done when all five commands succeed and you can see a billing alert configured in each cloud's console. There's nothing to `plan` yet — that starts next lesson — but if the three identity commands resolve, Terraform will authenticate too.
+
+**Check your understanding:**
+
+1. Why does authenticating the cloud CLIs also authenticate Terraform — where do the providers get their credentials?
+2. What's the difference between `gcloud auth login` and `gcloud auth application-default login`, and why does this course need both?
+3. Why is short-lived CLI auth the right choice locally but the wrong one for the CI pipeline in Module 12?
+4. What's the one thing you should configure on all three clouds *before* provisioning anything, and why is it more important here than in a single-cloud project?
+
+## Recap
+
+You have Terraform and Terragrunt installed, three clouds authenticated, and a billing alert guarding each. The engine and the credentials are ready — but a pile of tools isn't a project. Next we lay out the repository so there's a place for every module and every cloud's configuration to live.
+
+Next: [The repo layout →](/clouddeploy/en/setup/the-repo-layout/)
