@@ -1,0 +1,17 @@
+---
+title: Introduction
+description: "CloudDeploy คืออะไร, capstone นี้จัดโครงสร้างอย่างไร, และเมื่อจบแล้วคุณจะได้อะไรมา"
+sidebar:
+  order: 0
+---
+
+CloudDeploy คือ **infrastructure capstone** ของซีรีส์นี้ คุณ provision platform รูปทรงระดับ production บน **AWS, GCP, และ Azure** ด้วย **Terraform** และ **Terragrunt**, ตั้ง managed Kubernetes บนแต่ละ cloud (**EKS / GKE / AKS**), แล้ว deploy **ShopMicro** — แอป microservices จาก project #3 — จริง โดยต่อสายเข้ากับ **Datadog** (observability), **Keycloak** (identity), และ **GrowthBook** (feature flag) แล้วส่งทั้งหมดผ่าน **CI/CD**
+
+Introduction นี้ปูภาพก่อนที่คุณจะเขียน HCL สักบรรทัด:
+
+- [Overview](/clouddeploy/th/introduction/overview/) — CloudDeploy คืออะไร, รายการ feature, และแผนที่จับคู่แต่ละ module กับคอร์ส Learn Hub ที่มันดัดแปลงมา
+- [Architecture](/clouddeploy/th/introduction/architecture/) — module, tree `live/`, cluster, และ platform layer ประกอบกันอย่างไร และทำไมถึงเป็น multi-cloud
+- [Prerequisites](/clouddeploy/th/introduction/prerequisites/) — เครื่องมือและ cloud account ที่ต้องเตรียมก่อน Module 1
+- [Roadmap](/clouddeploy/th/introduction/roadmap/) — CloudDeploy อยู่ตรงไหนในฐานะบทปิดของซีรีส์ Real-World Projects
+
+พอพร้อมแล้ว เริ่มที่ [Overview →](/clouddeploy/th/introduction/overview/)

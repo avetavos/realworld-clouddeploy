@@ -1,0 +1,54 @@
+---
+title: Overview
+description: "CloudDeploy คืออะไร, รายการ feature, และแผนที่จับคู่แต่ละ build module กับคอร์ส Learn Hub ที่มันดัดแปลงมา"
+sidebar:
+  order: 1
+---
+
+## What CloudDeploy is
+
+CloudDeploy คือจุดที่ซีรีส์หยุดสร้าง *แอป* แล้วเริ่มสร้าง **platform ที่แอปเหล่านั้นรันอยู่** — จริง บนสาม cloud คุณเขียน **infrastructure as code** ด้วย Terraform, เก็บให้ DRY ข้าม cloud ด้วย Terragrunt, provision managed Kubernetes บน **AWS, GCP, และ Azure**, แล้ว deploy microservices **ShopMicro** ที่คุณสร้างใน project #3 ลงแต่ละ cluster จากนั้นทำให้มันเป็น deployment *จริง*: **Datadog** เฝ้าดูมัน, **Keycloak** เฝ้ายามมัน, **GrowthBook** ติด flag ให้มัน, และ **GitHub Actions** ส่งมันขึ้น
+
+หัวใจของ capstone คือช่องว่างระหว่าง "มันรันบน laptop ผมได้" กับ "มันรันบน production บน infrastructure ที่ทีมทำซ้ำได้ สังเกตได้ ทำให้ปลอดภัยได้ และแก้ได้อย่างมั่นใจ" ทุก project ก่อนหน้านี้จบด้วย `docker compose up` ในเครื่อง หรือ deploy เดี่ยว ๆ CloudDeploy คือ module ที่เปลี่ยนตัวไหนก็ได้ในนั้นให้กลายเป็น platform จริงแบบ multi-cloud ที่นิยามด้วยโค้ด **ShopMicro คือ workload** เพราะมันโหดที่สุด — ระบบ microservices บน Kubernetes ที่มี Helm chart ของตัวเอง — ดังนั้นถ้า platform รัน ShopMicro บนสาม cloud ได้ มันก็รันอะไรก็ตามที่ซีรีส์นี้สร้างมาได้
+
+ส่วนที่ต้องพูดตรง ๆ ตั้งแต่ต้น: การไป multi-cloud นั้น **กว้าง ไม่ลึก** คุณจะได้เห็น IAM สามแบบ, เรื่องราว load-balancer สามแบบ, ความหยุมหยิมของ managed Postgres สามแบบ — และ Terragrunt คือสิ่งที่กันไม่ให้คุณเขียน config เดียวกันซ้ำสามรอบ คอร์สแบบ single-cloud จะลงลึกกับ cloud เดียวมากกว่า ส่วนคอร์สนี้แลกความลึกกับทักษะที่มีค่าจริง ๆ อย่างการทำ infrastructure แบบ *portable*
+
+## The feature set
+
+- **Infrastructure as code** — ทั้ง platform เป็น Terraform module ทำซ้ำได้จาก account เปล่า
+- **DRY multi-cloud** — Terragrunt ขับ module เดียวกันข้าม tree `live/{aws,gcp,azure}/` พร้อม remote state และ locking
+- **Managed Kubernetes บนสาม cloud** — EKS, GKE, และ AKS แต่ละตัวมี node pool และ networking
+- **Managed data** — RDS, Cloud SQL, และ Azure Database for PostgreSQL
+- **ShopMicro ที่ deploy จริง** — Helm chart ของมันบนแต่ละ cluster หลัง ingress และ DNS
+- **Observability, identity, flag** — Datadog, Keycloak, และ GrowthBook เป็น platform layer ที่เป็นกลางต่อ cloud
+- **CI/CD** — GitHub Actions รัน `terragrunt plan` ตอน PR แล้ว apply + deploy ตอน merge ข้าม cloud matrix
+
+## The course map
+
+แต่ละ build module ดัดแปลงคอร์ส Learn Hub มาเป็นส่วนหนึ่งของ CloudDeploy
+
+| Module | What you build | Learn Hub course it adapts |
+| --- | --- | --- |
+| 1 · Setup & Tooling | Terraform, Terragrunt, cloud CLI, layout ของ repo | Terraform |
+| 2 · Terraform Foundations | Provider, resource, state, variable | Terraform |
+| 3 · Terragrunt & Remote State | config แบบ DRY, backend, locking, tree `live/` | Terraform |
+| 4 · Networking | VPC/VNet module ที่นำกลับมาใช้ซ้ำได้ | Terraform / Cloud |
+| 5 · Managed Kubernetes | EKS / GKE / AKS | Kubernetes |
+| 6 · Identity & IAM | Cloud IAM, least privilege | Cloud |
+| 7 · Managed Data | RDS / Cloud SQL / Azure DB | Terraform |
+| 8 · Deploying ShopMicro | Helm chart บนแต่ละ cluster | Kubernetes |
+| 9 · Observability (Datadog) | Metric, trace, log, dashboard | Datadog |
+| 10 · Identity (Keycloak) | Realm, OIDC, gateway auth | Keycloak |
+| 11 · Feature Flags (GrowthBook) | Flag ที่คุม feature | GrowthBook |
+| 12 · CI/CD | GitHub Actions, multi-cloud | Docker / CI |
+| 13 · Multi-cloud in Practice | Drift, cost, teardown | Cloud |
+
+## Verify
+
+คุณพร้อมไปต่อเมื่อคุณตอบคำถามพวกนี้ด้วยคำพูดของคุณเองได้:
+
+- ความต่างที่ CloudDeploy พูดถึงจริง ๆ คืออะไร — ระหว่างแอปที่แค่รันได้ กับ infrastructure ที่ทำซ้ำได้ สังเกตได้ ปลอดภัย และแก้ได้?
+- ทำไม ShopMicro ถึงเป็น workload ที่ capstone เลือก deploy แทนที่จะเป็น sample เล่น ๆ?
+- multi-cloud แลกอะไรทิ้งไป และ Terragrunt คืนอะไรกลับมา?
+
+ต่อไป [architecture](/clouddeploy/th/introduction/architecture/) จะแสดงให้เห็นว่าชิ้นส่วนต่าง ๆ ประกอบกันอย่างไร

@@ -1,0 +1,61 @@
+---
+title: Real-World Projects Roadmap
+description: "CloudDeploy คือ infrastructure capstone ที่ปิดซีรีส์ Real-World Projects หกโปรเจกต์ นี่คือที่ที่มันอยู่และสิ่งที่มาก่อนหน้า"
+sidebar:
+  order: 4
+---
+
+## Where CloudDeploy fits
+
+CloudDeploy คือ **บทปิด** ของซีรีส์ **Real-World Projects** หกโปรเจกต์ แต่ละโปรเจกต์สร้างแอปจริงคนละตัวขึ้นมาจาก repo เปล่า โดยจงใจดึงคอร์ส Learn Hub มาใช้คนละส่วน — และตัวสุดท้ายนี้คือจุดที่ทุกอย่างมารวมกัน: คุณเอา **ShopMicro** ระบบ microservices จาก project #3 มา deploy จริงบนสาม cloud ด้วย platform ที่คุณ provision ทั้งหมดเป็นโค้ด
+
+## TaskFlow — realtime Kanban board ✅ live
+
+board สไตล์ Trello ที่ update สด ใช้ Rust, Redis, และ frontend Astro
+
+- **Stack:** Rust/Axum + PostgreSQL + Redis + WebSocket + Astro + Docker
+
+## DevBlog — headless CMS + blog ✅ live
+
+platform เนื้อหาบน **GraphQL** API พร้อม SSR และ ISR
+
+- **Stack:** Node/NestJS + MongoDB + GraphQL + Next.js
+
+## ShopMicro — e-commerce microservices ✅ live
+
+service อิสระที่คุยกันผ่าน **gRPC** พร้อม Kafka, RabbitMQ, saga, และ Helm chart สำหรับ Kubernetes
+
+- **Stack:** Go + gRPC + PostgreSQL + Kafka + RabbitMQ + Kubernetes
+
+## FitTrack — mobile-first fitness app ✅ live
+
+ตัวจับเวลา workout ที่มีแอป Flutter และ companion เป็น Svelte บน backend Python ตัวเดียว
+
+- **Stack:** Python/FastAPI + Supabase + Flutter + Svelte
+
+## Mosaic — micro-frontend storefront ✅ live
+
+storefront ที่ประกอบจาก micro-frontend ที่ deploy อิสระผ่าน Module Federation
+
+- **Stack:** React + Svelte + Astro + Web Components + Module Federation
+
+## OfflineNotes — offline-first PWA ✅ live
+
+แอปโน้ตแบบ local-first ที่มี CRDT แบบ Rust→WASM ซึ่ง sync ได้โดยไม่ conflict
+
+- **Stack:** TypeScript + Web Components + IndexedDB + WASM + Astro
+
+## CloudDeploy — infrastructure capstone ← you are here
+
+Provision platform รูปทรงระดับ production บน AWS, GCP, และ Azure ด้วย Terraform และ Terragrunt, ตั้ง EKS/GKE/AKS, แล้ว deploy ShopMicro จริง — พร้อม Datadog, Keycloak, GrowthBook, และ CI/CD
+
+- **Stack:** Terraform + Terragrunt + AWS/GCP/Azure + Kubernetes + Datadog + Keycloak + GrowthBook
+- **Adapts:** Terraform/IaC, Kubernetes, Datadog, Keycloak, GrowthBook
+
+## The series comes full circle
+
+ห้าโปรเจกต์แรกต่างก็ *สร้าง* บางอย่างขึ้นมาแล้วหยุดที่การรันในเครื่องหรือ deploy เดี่ยว ๆ CloudDeploy คือข้อพิสูจน์ว่าการ ship เป็นศาสตร์ของมันเอง: infrastructure ที่คุณทำซ้ำได้จากศูนย์, apply ได้อย่างปลอดภัย, สังเกตได้, ทำให้ปลอดภัยได้, และ teardown ได้ — platform เดียวกันบน cloud ไหนก็ได้ การ deploy ShopMicro ตรงนี้ไม่ใช่แอปใหม่ แต่เป็นข้อพิสูจน์ว่าทุกอย่างที่คุณสร้างมารันในโลกจริงได้
+
+## Verify
+
+คุณเข้าที่แล้วเมื่อคุณพูดได้อย่างละประโยคว่า CloudDeploy provision อะไร, มันเอาโปรเจกต์ไหนมา deploy เป็น workload, และ "infrastructure as code ข้าม cloud" ให้อะไรกับทีมที่การ deploy แบบกดมือเองไม่ให้ ต่อไป เริ่ม [Module 1 · Setup & Tooling](/clouddeploy/th/setup/)

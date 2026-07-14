@@ -1,0 +1,61 @@
+---
+title: Real-World Projects Roadmap
+description: "CloudDeploy is the infrastructure capstone that closes the six-project Real-World Projects series. Here's where it fits and what came before."
+sidebar:
+  order: 4
+---
+
+## Where CloudDeploy fits
+
+CloudDeploy is the **finale** of the six-project **Real-World Projects** series. Each project rebuilt a different real application from an empty repo, deliberately drawing on a different slice of the Learn Hub courses — and this last one is where they come home to roost: you take **ShopMicro**, the microservices system from project #3, and deploy it for real on three clouds with a platform you provision entirely as code.
+
+## TaskFlow — realtime Kanban board ✅ live
+
+A Trello-style board with live updates. Rust, Redis, and an Astro frontend.
+
+- **Stack:** Rust/Axum + PostgreSQL + Redis + WebSocket + Astro + Docker
+
+## DevBlog — headless CMS + blog ✅ live
+
+A content platform over a **GraphQL** API with SSR and ISR.
+
+- **Stack:** Node/NestJS + MongoDB + GraphQL + Next.js
+
+## ShopMicro — e-commerce microservices ✅ live
+
+Independent services over **gRPC**, with Kafka, RabbitMQ, a saga, and a Helm chart for Kubernetes.
+
+- **Stack:** Go + gRPC + PostgreSQL + Kafka + RabbitMQ + Kubernetes
+
+## FitTrack — mobile-first fitness app ✅ live
+
+A workout tracker with a Flutter app and a Svelte companion on one Python backend.
+
+- **Stack:** Python/FastAPI + Supabase + Flutter + Svelte
+
+## Mosaic — micro-frontend storefront ✅ live
+
+A storefront of independently-deployed micro-frontends via Module Federation.
+
+- **Stack:** React + Svelte + Astro + Web Components + Module Federation
+
+## OfflineNotes — offline-first PWA ✅ live
+
+A local-first notes app with a Rust→WASM CRDT that syncs conflict-free.
+
+- **Stack:** TypeScript + Web Components + IndexedDB + WASM + Astro
+
+## CloudDeploy — infrastructure capstone ← you are here
+
+Provision a production-shaped platform on AWS, GCP, and Azure with Terraform and Terragrunt, stand up EKS/GKE/AKS, and deploy ShopMicro for real — with Datadog, Keycloak, GrowthBook, and CI/CD.
+
+- **Stack:** Terraform + Terragrunt + AWS/GCP/Azure + Kubernetes + Datadog + Keycloak + GrowthBook
+- **Adapts:** Terraform/IaC, Kubernetes, Datadog, Keycloak, GrowthBook
+
+## The series comes full circle
+
+The first five projects each *built* something and stopped at a local run or a single deploy. CloudDeploy is the argument that shipping is its own discipline: infrastructure you can reproduce from nothing, apply safely, observe, secure, and tear down — the same platform on any cloud. Deploying ShopMicro here isn't a new app; it's proof that everything you built can actually run in the world.
+
+## Verify
+
+You're oriented when you can say, in a sentence each, what CloudDeploy provisions, which project it deploys as the workload, and what "infrastructure as code across clouds" gives a team that a hand-clicked deploy doesn't. Next, start [Module 1 · Setup & Tooling](/clouddeploy/en/setup/).

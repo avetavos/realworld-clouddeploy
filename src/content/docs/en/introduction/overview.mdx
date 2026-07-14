@@ -1,0 +1,54 @@
+---
+title: Overview
+description: "What CloudDeploy is, the feature list, and the map from each build module to the Learn Hub course it adapts."
+sidebar:
+  order: 1
+---
+
+## What CloudDeploy is
+
+CloudDeploy is where the series stops building *apps* and starts building the **platform they run on** — for real, on three clouds. You write **infrastructure as code** with Terraform, keep it DRY across clouds with Terragrunt, provision managed Kubernetes on **AWS, GCP, and Azure**, and deploy the **ShopMicro** microservices you built in project #3 onto each cluster. Then you make it a *real* deployment: **Datadog** watches it, **Keycloak** guards it, **GrowthBook** flags it, and **GitHub Actions** ships it.
+
+The point of the capstone is the gap between "it runs on my laptop" and "it runs in production, on infrastructure a team can reproduce, observe, secure, and change safely." Every earlier project ended with a local `docker compose up` or a single deploy; CloudDeploy is the module that turns any of them into a real, code-defined, multi-cloud platform. **ShopMicro is the workload** because it's the most demanding — a Kubernetes microservices system with its own Helm chart — so if the platform can run ShopMicro on three clouds, it can run anything the series produced.
+
+The honest part, named up front: going multi-cloud is **broad, not deep**. You'll see three IAM models, three load-balancer stories, three managed-Postgres quirks — and Terragrunt is what keeps you from writing the same config three times. A single-cloud course would go deeper on one; this one trades depth for the genuinely valuable skill of *portable* infrastructure.
+
+## The feature set
+
+- **Infrastructure as code** — the whole platform is Terraform modules, reproducible from an empty account.
+- **DRY multi-cloud** — Terragrunt drives the same modules across a `live/{aws,gcp,azure}/` tree, with remote state and locking.
+- **Managed Kubernetes on three clouds** — EKS, GKE, and AKS, each with node pools and networking.
+- **Managed data** — RDS, Cloud SQL, and Azure Database for PostgreSQL.
+- **ShopMicro, deployed for real** — its Helm chart on each cluster, behind ingress and DNS.
+- **Observability, identity, flags** — Datadog, Keycloak, and GrowthBook as a cloud-neutral platform layer.
+- **CI/CD** — GitHub Actions runs `terragrunt plan` on PRs and applies + deploys on merge, across a cloud matrix.
+
+## The course map
+
+Each build module adapts a Learn Hub course to one slice of CloudDeploy.
+
+| Module | What you build | Learn Hub course it adapts |
+| --- | --- | --- |
+| 1 · Setup & Tooling | Terraform, Terragrunt, cloud CLIs, the repo layout | Terraform |
+| 2 · Terraform Foundations | Providers, resources, state, variables | Terraform |
+| 3 · Terragrunt & Remote State | DRY config, backends, locking, the `live/` tree | Terraform |
+| 4 · Networking | Reusable VPC/VNet modules | Terraform / Cloud |
+| 5 · Managed Kubernetes | EKS / GKE / AKS | Kubernetes |
+| 6 · Identity & IAM | Cloud IAM, least privilege | Cloud |
+| 7 · Managed Data | RDS / Cloud SQL / Azure DB | Terraform |
+| 8 · Deploying ShopMicro | The Helm chart on each cluster | Kubernetes |
+| 9 · Observability (Datadog) | Metrics, traces, logs, dashboards | Datadog |
+| 10 · Identity (Keycloak) | Realm, OIDC, gateway auth | Keycloak |
+| 11 · Feature Flags (GrowthBook) | Flags gating a feature | GrowthBook |
+| 12 · CI/CD | GitHub Actions, multi-cloud | Docker / CI |
+| 13 · Multi-cloud in Practice | Drift, cost, teardown | Cloud |
+
+## Verify
+
+You're ready to move on when you can answer these in your own words:
+
+- What's the difference CloudDeploy is really about — between an app that runs and infrastructure that's reproducible, observable, secure, and changeable?
+- Why is ShopMicro the workload the capstone deploys, rather than a trivial sample?
+- What does multi-cloud trade away, and what does Terragrunt give back?
+
+Next, the [architecture](/clouddeploy/en/introduction/architecture/) shows how the pieces fit together.

@@ -1,0 +1,38 @@
+---
+title: Prerequisites
+description: "The tools and cloud accounts to set up before Module 1, and the knowledge the course assumes."
+sidebar:
+  order: 3
+---
+
+## What you'll need
+
+Each tool is introduced in the module that first uses it, but here's the full list so you can set up ahead of time.
+
+- **[Terraform](https://developer.hashicorp.com/terraform/install)** and **[Terragrunt](https://terragrunt.gruntwork.io/docs/getting-started/install/)** — the IaC core.
+- **Cloud accounts and CLIs** — an **AWS** account with the [AWS CLI](https://aws.amazon.com/cli/), a **GCP** project with [gcloud](https://cloud.google.com/sdk/docs/install), and an **Azure** subscription with the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli). A free tier on each is enough to follow along, but managed Kubernetes and databases **cost real money** — the course keeps footprints small and Module 13 covers teardown.
+- **`kubectl`** and **[Helm](https://helm.sh/docs/intro/install/)** — to talk to the clusters and deploy ShopMicro and the platform layer.
+- **git** and a **GitHub account** — the CI/CD module runs on GitHub Actions.
+- **The ShopMicro repo** — you deploy [ShopMicro](https://github.com/avetavos/realworld-shopmicro)'s Helm chart; you don't need to have built it first, but it helps to have read that guide.
+
+> ⚠️ **Costs and safety:** three clusters plus managed databases are not free. Use small node counts and single regions, destroy what you're not using, and set billing alerts on each cloud before you start.
+
+## What the course assumes
+
+CloudDeploy is the advanced capstone. You'll get the most out of it if you're comfortable with:
+
+- **The command line and YAML/HCL** — you'll read and write a lot of both. Prior Terraform helps but isn't required; Modules 2–3 teach it.
+- **Kubernetes basics** — Pods, Deployments, Services, and Helm. The [ShopMicro guide's Kubernetes module](https://projects.avetavos.com/shopmicro/en/kubernetes/) is good grounding.
+- **General cloud literacy** — the idea of VPCs, IAM, and managed services, even if you've only used one cloud. You do **not** need prior GCP or Azure experience; the differences are taught as they come up.
+- **CI basics** — what a pipeline does; GitHub Actions is taught from scratch.
+
+## Verify
+
+You're set up when:
+
+- `terraform -version` and `terragrunt -version` both work.
+- `aws sts get-caller-identity`, `gcloud auth list`, and `az account show` each return your authenticated identity.
+- `kubectl version --client` and `helm version` work.
+- You have billing alerts configured on all three clouds.
+
+Next, the [roadmap](/clouddeploy/en/introduction/roadmap/) shows where CloudDeploy fits — as the finale.

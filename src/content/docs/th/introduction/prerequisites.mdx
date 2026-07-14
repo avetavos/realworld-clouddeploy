@@ -1,0 +1,38 @@
+---
+title: Prerequisites
+description: "เครื่องมือและ cloud account ที่ต้องเตรียมก่อน Module 1 และความรู้ที่คอร์สนี้ถือว่าคุณมีอยู่แล้ว"
+sidebar:
+  order: 3
+---
+
+## What you'll need
+
+เครื่องมือแต่ละตัวจะถูกแนะนำใน module ที่ใช้มันครั้งแรก แต่นี่คือรายการเต็มเผื่อคุณอยากเตรียมล่วงหน้า
+
+- **[Terraform](https://developer.hashicorp.com/terraform/install)** และ **[Terragrunt](https://terragrunt.gruntwork.io/docs/getting-started/install/)** — แกนหลักของ IaC
+- **Cloud account และ CLI** — **AWS** account พร้อม [AWS CLI](https://aws.amazon.com/cli/), **GCP** project พร้อม [gcloud](https://cloud.google.com/sdk/docs/install), และ **Azure** subscription พร้อม [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) free tier ของแต่ละเจ้าพอสำหรับทำตามคอร์สได้ แต่ managed Kubernetes และ database **เสียเงินจริง** — คอร์สนี้ทำให้ footprint เล็กไว้ และ Module 13 ครอบคลุมเรื่อง teardown
+- **`kubectl`** และ **[Helm](https://helm.sh/docs/intro/install/)** — เอาไว้คุยกับ cluster และ deploy ShopMicro กับ platform layer
+- **git** และ **GitHub account** — module CI/CD รันบน GitHub Actions
+- **repo ของ ShopMicro** — คุณจะ deploy Helm chart ของ [ShopMicro](https://github.com/avetavos/realworld-shopmicro) คุณไม่จำเป็นต้องสร้างมันมาก่อน แต่ถ้าได้อ่าน guide นั้นมาแล้วจะช่วยได้
+
+> ⚠️ **Costs and safety:** สาม cluster บวก managed database ไม่ฟรี ใช้ node count น้อย ๆ และ single region, ลบสิ่งที่ไม่ได้ใช้ทิ้ง, และตั้ง billing alert บนทุก cloud ก่อนเริ่ม
+
+## What the course assumes
+
+CloudDeploy คือ capstone ระดับ advanced คุณจะได้ประโยชน์จากมันมากที่สุดถ้าคุณคุ้นกับ:
+
+- **command line และ YAML/HCL** — คุณจะได้อ่านและเขียนทั้งสองอย่างเยอะ ประสบการณ์ Terraform ช่วยได้แต่ไม่จำเป็น; Module 2–3 สอนมันให้
+- **พื้นฐาน Kubernetes** — Pod, Deployment, Service, และ Helm [module Kubernetes ของ ShopMicro guide](https://projects.avetavos.com/shopmicro/en/kubernetes/) เป็นพื้นฐานที่ดี
+- **ความเข้าใจ cloud ทั่วไป** — แนวคิดของ VPC, IAM, และ managed service แม้คุณจะเคยใช้แค่ cloud เดียว คุณ **ไม่** จำเป็นต้องมีประสบการณ์ GCP หรือ Azure มาก่อน; ความต่างจะถูกสอนตอนที่มันโผล่มา
+- **พื้นฐาน CI** — pipeline ทำอะไร; GitHub Actions สอนตั้งแต่ศูนย์
+
+## Verify
+
+คุณพร้อมแล้วเมื่อ:
+
+- `terraform -version` และ `terragrunt -version` ทำงานได้ทั้งคู่
+- `aws sts get-caller-identity`, `gcloud auth list`, และ `az account show` แต่ละตัวคืน identity ที่ authenticate แล้วของคุณ
+- `kubectl version --client` และ `helm version` ทำงานได้
+- คุณตั้ง billing alert ไว้บนทั้งสาม cloud แล้ว
+
+ต่อไป [roadmap](/clouddeploy/th/introduction/roadmap/) จะแสดงว่า CloudDeploy อยู่ตรงไหน — ในฐานะบทปิด

@@ -1,0 +1,67 @@
+---
+title: CloudDeploy
+description: A hands-on, bilingual capstone where you build CloudDeploy — provision a production-shaped platform on AWS, GCP, and Azure with Terraform and Terragrunt, stand up managed Kubernetes on each, and deploy ShopMicro wired to Datadog, Keycloak, and GrowthBook.
+template: splash
+hero:
+  tagline: Build CloudDeploy, the infrastructure capstone. Provision the same platform on AWS, GCP, and Azure with Terraform and Terragrunt, stand up EKS, GKE, and AKS, and deploy ShopMicro for real — with Datadog observability, Keycloak identity, and GrowthBook feature flags, all shipped by CI/CD.
+  actions:
+    - text: Start here
+      link: /clouddeploy/en/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: See the architecture
+      link: /clouddeploy/en/introduction/architecture/
+      icon: rocket
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What you'll build
+
+<CardGrid>
+  <Card title="Introduction" icon="open-book">
+    Why CloudDeploy, how the capstone is structured, and what you'll have built by the end. [Open →](/clouddeploy/en/introduction/)
+  </Card>
+  <Card title="Setup & Tooling" icon="setting">
+    Terraform, Terragrunt, the AWS/GCP/Azure CLIs, and the `modules/` + `live/` repo layout. [Open →](/clouddeploy/en/setup/)
+  </Card>
+  <Card title="Terraform Foundations" icon="seti:terraform">
+    Providers, resources, state, and variables — a first resource on each cloud. [Open →](/clouddeploy/en/terraform/)
+  </Card>
+  <Card title="Terragrunt & Remote State" icon="seti:config">
+    Keep config DRY, with remote state backends and locking across a `live/` tree. [Open →](/clouddeploy/en/terragrunt/)
+  </Card>
+  <Card title="Networking" icon="random">
+    Build reusable VPC/VNet modules — subnets, routing, and security per cloud. [Open →](/clouddeploy/en/networking/)
+  </Card>
+  <Card title="Managed Kubernetes" icon="cloud-download">
+    Provision EKS, GKE, and AKS with node pools and a kubeconfig per cloud. [Open →](/clouddeploy/en/kubernetes/)
+  </Card>
+  <Card title="Identity & IAM" icon="approve-check">
+    Cloud IAM with least privilege — IRSA, Workload Identity, and Managed Identity. [Open →](/clouddeploy/en/iam/)
+  </Card>
+  <Card title="Managed Data" icon="seti:db">
+    Provision managed Postgres — RDS, Cloud SQL, and Azure Database. [Open →](/clouddeploy/en/data/)
+  </Card>
+  <Card title="Deploying ShopMicro" icon="rocket">
+    Deploy the ShopMicro Helm chart onto each cluster, with ingress and per-cloud config. [Open →](/clouddeploy/en/deploy-shopmicro/)
+  </Card>
+  <Card title="Observability (Datadog)" icon="bars">
+    Wire the Datadog agent for metrics, traces, and logs, with dashboards and monitors. [Open →](/clouddeploy/en/datadog/)
+  </Card>
+  <Card title="Identity (Keycloak)" icon="approve-check-circle">
+    Deploy Keycloak, a realm and OIDC client, and put auth at the ShopMicro gateway. [Open →](/clouddeploy/en/keycloak/)
+  </Card>
+  <Card title="Feature Flags (GrowthBook)" icon="setting">
+    Deploy GrowthBook and gate a ShopMicro feature behind a flag. [Open →](/clouddeploy/en/growthbook/)
+  </Card>
+  <Card title="CI/CD" icon="github">
+    Ship with GitHub Actions — `terragrunt plan` on PR, apply and deploy on merge, across clouds. [Open →](/clouddeploy/en/cicd/)
+  </Card>
+  <Card title="Multi-cloud in Practice" icon="warning">
+    Manage drift and state, watch cost, tear down cleanly — and weigh the honest trade-offs. [Open →](/clouddeploy/en/multi-cloud/)
+  </Card>
+  <Card title="Wrap-up" icon="star">
+    Review what you built, the trade-offs, and where to take CloudDeploy next. [Open →](/clouddeploy/en/wrap-up/)
+  </Card>
+</CardGrid>

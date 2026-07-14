@@ -1,0 +1,67 @@
+---
+title: CloudDeploy
+description: capstone แบบลงมือทำสองภาษา ที่คุณสร้าง CloudDeploy — provision platform รูปทรงระดับ production บน AWS, GCP, และ Azure ด้วย Terraform และ Terragrunt, ตั้ง managed Kubernetes บนทุก cloud, แล้ว deploy ShopMicro พร้อมต่อสายเข้ากับ Datadog, Keycloak, และ GrowthBook
+template: splash
+hero:
+  tagline: สร้าง CloudDeploy ซึ่งเป็น capstone ด้าน infrastructure — provision platform เดียวกันบน AWS, GCP, และ Azure ด้วย Terraform และ Terragrunt, ตั้ง EKS, GKE, และ AKS, แล้ว deploy ShopMicro จริง พร้อม observability ด้วย Datadog, identity ด้วย Keycloak, และ feature flag ด้วย GrowthBook ส่งทั้งหมดผ่าน CI/CD
+  actions:
+    - text: เริ่มที่นี่
+      link: /clouddeploy/th/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: ดู architecture
+      link: /clouddeploy/th/introduction/architecture/
+      icon: rocket
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What you'll build
+
+<CardGrid>
+  <Card title="Introduction" icon="open-book">
+    ทำไมต้อง CloudDeploy, capstone นี้จัดโครงสร้างอย่างไร, และเมื่อจบแล้วคุณจะได้อะไรมา [Open →](/clouddeploy/th/introduction/)
+  </Card>
+  <Card title="Setup & Tooling" icon="setting">
+    Terraform, Terragrunt, CLI ของ AWS/GCP/Azure, และ layout ของ repo แบบ `modules/` + `live/` [Open →](/clouddeploy/th/setup/)
+  </Card>
+  <Card title="Terraform Foundations" icon="seti:terraform">
+    Provider, resource, state, และ variable — สร้าง resource แรกบนแต่ละ cloud [Open →](/clouddeploy/th/terraform/)
+  </Card>
+  <Card title="Terragrunt & Remote State" icon="seti:config">
+    เก็บ config ให้ DRY พร้อม remote state backend และ locking ทั่วทั้ง tree `live/` [Open →](/clouddeploy/th/terragrunt/)
+  </Card>
+  <Card title="Networking" icon="random">
+    สร้าง VPC/VNet module ที่นำกลับมาใช้ซ้ำได้ — subnet, routing, และ security ต่อ cloud [Open →](/clouddeploy/th/networking/)
+  </Card>
+  <Card title="Managed Kubernetes" icon="cloud-download">
+    Provision EKS, GKE, และ AKS พร้อม node pool และ kubeconfig ต่อ cloud [Open →](/clouddeploy/th/kubernetes/)
+  </Card>
+  <Card title="Identity & IAM" icon="approve-check">
+    Cloud IAM แบบ least privilege — IRSA, Workload Identity, และ Managed Identity [Open →](/clouddeploy/th/iam/)
+  </Card>
+  <Card title="Managed Data" icon="seti:db">
+    Provision managed Postgres — RDS, Cloud SQL, และ Azure Database [Open →](/clouddeploy/th/data/)
+  </Card>
+  <Card title="Deploying ShopMicro" icon="rocket">
+    Deploy Helm chart ของ ShopMicro ลงแต่ละ cluster พร้อม ingress และ config ต่อ cloud [Open →](/clouddeploy/th/deploy-shopmicro/)
+  </Card>
+  <Card title="Observability (Datadog)" icon="bars">
+    ต่อสาย Datadog agent สำหรับ metric, trace, และ log พร้อม dashboard และ monitor [Open →](/clouddeploy/th/datadog/)
+  </Card>
+  <Card title="Identity (Keycloak)" icon="approve-check-circle">
+    Deploy Keycloak, สร้าง realm และ OIDC client, แล้ววาง auth ไว้ที่ gateway ของ ShopMicro [Open →](/clouddeploy/th/keycloak/)
+  </Card>
+  <Card title="Feature Flags (GrowthBook)" icon="setting">
+    Deploy GrowthBook แล้วคุม feature ของ ShopMicro ไว้หลัง flag [Open →](/clouddeploy/th/growthbook/)
+  </Card>
+  <Card title="CI/CD" icon="github">
+    ส่งงานด้วย GitHub Actions — `terragrunt plan` ตอน PR, apply และ deploy ตอน merge, ข้ามหลาย cloud [Open →](/clouddeploy/th/cicd/)
+  </Card>
+  <Card title="Multi-cloud in Practice" icon="warning">
+    จัดการ drift และ state, จับตา cost, teardown ให้สะอาด — และชั่งน้ำหนัก trade-off ตามจริง [Open →](/clouddeploy/th/multi-cloud/)
+  </Card>
+  <Card title="Wrap-up" icon="star">
+    ทบทวนสิ่งที่คุณสร้าง, trade-off, และจะพา CloudDeploy ไปต่อทางไหน [Open →](/clouddeploy/th/wrap-up/)
+  </Card>
+</CardGrid>
