@@ -1,0 +1,226 @@
+---
+title: The Datadog agent
+description: "deploy datadog/datadog Helm chart ลงทุก cluster ด้วย Terraform helm_release — API key เป็น Kubernetes secret เปิด APM trace และ log ทั่วทั้ง cluster"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+ShopMicro [รันและเข้าถึงได้](/clouddeploy/th/deploy-shopmicro/ingress-and-config/) บนสาม cloud แล้ว — แต่คุณยังเห็นไม่ได้ว่ามันกำลังทำอะไร module นี้แก้เรื่องนั้น เริ่มที่ตัวเก็บข้อมูล: **Datadog agent** ที่ deploy ลงทุก cluster เป็น Terraform `helm_release` ของ chart `datadog/datadog` ตัวจริง โดยเปิด **APM/traces** และ **logs** ทั่วทั้ง cluster
+
+agent เป็นชิ้นแรกของ [cloud-neutral platform layer](/clouddeploy/th/introduction/architecture/) ต่างจาก network, cluster และ data ที่อยู่ข้างใต้ มันไม่แคร์ว่าอยู่บน cloud ไหน — มันคือ Helm release *เดียวกัน* บน EKS, GKE และ AKS ที่รายงานเข้า Datadog account *เดียวกัน* นั่นคือประเด็นทั้งหมด: observability ที่คุณไม่ต้องเรียนใหม่ต่อ cloud
+
+ชิ้นส่วนต่าง ๆ:
+
+- **Kubernetes secret** ที่เก็บ Datadog API key สร้างโดย Terraform จาก sensitive variable — chart อ้างอิงมันด้วยชื่อแทนที่จะรับ key แบบ inline
+- `helm_release` ของ `datadog/datadog` พร้อม `values.yaml` ที่เปิด APM (trace collection), log collection (ทุก container) และ tag ทุก metric ด้วยชื่อ cluster และ environment
+- unit `live/<cloud>/platform` (หรือ `live/<cloud>/datadog`) ที่ generate provider `helm`/`kubernetes` จาก output ของ `cluster` — pattern เดียวกับที่คุณใช้กับ [ShopMicro](/clouddeploy/th/deploy-shopmicro/helm-release/)
+
+## Why
+
+**ทำไมใช้ secret ที่มีอยู่แทนที่จะใส่ API key ลงใน chart value?** key ที่ส่งเป็น Helm value จะไปจบใน manifest ที่ render, ใน release history ของ Helm และอาจอยู่ใน output ของ `terraform plan` การสร้างมันครั้งเดียวเป็น `kubernetes_secret` จาก sensitive variable — แล้วชี้ chart มาที่มันด้วย `datadog.apiKeyExistingSecret` — เก็บ credential ไว้นอกทุกที่เหล่านั้น chart รองรับสิ่งนี้เป็น first-class จึงไม่มีเหตุผลที่จะไม่ทำ
+
+**ทำไมเปิด APM และ log ที่ระดับ agent แทนที่จะต่อ service?** เพราะ agent เป็นแบบ cluster-wide (DaemonSet บนทุก node) การเปิด trace และ log collection ที่นั่นหมายความว่า pod *ใด ๆ* ที่ ShopMicro schedule จะถูกครอบคลุมอัตโนมัติ — service ใหม่รวมด้วย คุณ instrument platform ครั้งเดียวแทนที่จะต้องจำต่อสายแต่ละ workload ส่วน trade-off คือ volume: "เก็บ log ทุก container" คือสายน้ำเชี่ยว ซึ่งเป็นเหตุผลที่ใน deployment จริงคุณจะเพิ่ม exclusion filter สำหรับ slice ที่สอนได้ all-on คือ default ที่ถูกต้อง
+
+**ทำไมใช้ Helm release เดียวกันบนทั้งสาม cloud?** layer ที่อยู่ใต้ Datadog (network, cluster, data) จำเป็นต้องเฉพาะ cloud — LB ต่างกัน managed database ต่างกัน IAM ต่างกัน observability ไม่ต่าง การรัน chart `datadog/datadog` ตัวเดียวกันบนทุก cluster หมายความว่า dashboard เดียวเห็นทั้งสาม cloud เคียงข้างกัน ซึ่งเป็นผลตอบแทนของ cloud-neutral platform layer พอดี
+
+## Pros & cons
+
+**Datadog agent via Helm on each cluster vs a cloud-native monitoring stack per cloud (CloudWatch / Cloud Monitoring / Azure Monitor)**
+
+- **Pros:** เครื่องมือเดียว query language เดียว ที่เดียวที่เห็นทั้งสาม cloud setup เหมือนกันทุกที่ APM/log/metric รวมเป็นหนึ่ง
+- **Cons:** dependency จาก third-party และค่าใช้จ่ายของมัน และคุณไม่ได้ใช้ native metric "ฟรี" ของแต่ละ cloud เป็นมุมมองหลัก
+
+**API key as an existing Kubernetes secret vs an inline chart value**
+
+- **Pros:** key อยู่นอก manifest ที่ render, นอก Helm history และนอก plan output การ rotate คือการ update secret ไม่ใช่การเปลี่ยน chart
+- **Cons:** มี resource เพิ่มอีกตัวที่ต้อง manage และ secret ต้องมีอยู่ใน namespace ก่อนที่ release จะติดตั้ง
+
+## Set it up
+
+### 1. `charts/datadog/values.yaml` (agent config)
+
+เปิด APM และ log ตั้ง Datadog site และ tag ทุกอย่างด้วย cluster และ environment เพื่อให้คุณ slice ตาม cloud ได้ทีหลัง `apiKeyExistingSecret` ชี้ไปที่ secret ที่คุณจะสร้างใน step 2
+
+```yaml
+# charts/datadog/values.yaml
+datadog:
+  site: datadoghq.com
+  apiKeyExistingSecret: datadog-secret
+  clusterName: clouddeploy
+
+  # APM: collect traces over TCP from instrumented ShopMicro services.
+  apm:
+    portEnabled: true
+
+  # Logs: collect from every container in the cluster.
+  logs:
+    enabled: true
+    containerCollectAll: true
+
+  # Tag every metric/trace/log so dashboards can filter by cloud + env.
+  tags:
+    - "env:production"
+
+# The Cluster Agent centralizes cluster-level metadata and cuts API-server load.
+clusterAgent:
+  enabled: true
+```
+
+### 2. `modules/datadog-agent/` (secret + release)
+
+module ที่บางและ cloud-neutral: สร้าง secret ของ API key จากนั้นติดตั้ง chart โดยชี้ไปที่มัน
+
+```hcl
+# modules/datadog-agent/versions.tf
+terraform {
+  required_providers {
+    helm       = { source = "hashicorp/helm", version = "~> 3.0" }
+    kubernetes = { source = "hashicorp/kubernetes", version = "~> 2.30" }
+  }
+}
+```
+
+```hcl
+# modules/datadog-agent/variables.tf
+variable "values_file"      { type = string }
+variable "chart_version"    { type = string }
+variable "namespace"        { type = string, default = "datadog" }
+variable "datadog_api_key"  { type = string, sensitive = true }
+```
+
+```hcl
+# modules/datadog-agent/main.tf
+resource "kubernetes_namespace" "datadog" {
+  metadata { name = var.namespace }
+}
+
+resource "kubernetes_secret" "datadog" {
+  metadata {
+    name      = "datadog-secret"
+    namespace = kubernetes_namespace.datadog.metadata[0].name
+  }
+  data = {
+    "api-key" = var.datadog_api_key # the chart expects the key named exactly "api-key"
+  }
+}
+
+resource "helm_release" "datadog" {
+  name       = "datadog"
+  namespace  = kubernetes_namespace.datadog.metadata[0].name
+  repository = "https://helm.datadoghq.com"
+  chart      = "datadog"
+  version    = var.chart_version
+
+  values     = [file(var.values_file)]
+  depends_on = [kubernetes_secret.datadog]
+}
+```
+
+### 3. `live/aws/datadog/terragrunt.hcl` (wire it up)
+
+รูปร่างเดียวกับ ShopMicro unit: dependency `cluster`, provider ที่ generate ขึ้น และ API key ที่ดึงจาก environment (ป้อนโดย CI หรือ secrets manager ไม่เคย commit)
+
+```hcl
+include "root" { path = find_in_parent_folders("root.hcl") }
+
+terraform { source = "../../../modules/datadog-agent" }
+
+dependency "cluster" {
+  config_path = "../cluster"
+  mock_outputs = {
+    cluster_name     = "clouddeploy"
+    cluster_endpoint = "https://localhost"
+    cluster_ca       = ""
+  }
+}
+
+generate "k8s_providers" {
+  path      = "k8s_providers.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<EOF
+data "aws_eks_cluster_auth" "this" {
+  name = "${dependency.cluster.outputs.cluster_name}"
+}
+provider "helm" {
+  kubernetes = {
+    host                   = "${dependency.cluster.outputs.cluster_endpoint}"
+    cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+    token                  = data.aws_eks_cluster_auth.this.token
+  }
+}
+provider "kubernetes" {
+  host                   = "${dependency.cluster.outputs.cluster_endpoint}"
+  cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+  token                  = data.aws_eks_cluster_auth.this.token
+}
+EOF
+}
+
+inputs = {
+  values_file    = "${get_repo_root()}/charts/datadog/values.yaml"
+  chart_version  = "3.60.0"
+  datadog_api_key = get_env("DD_API_KEY")
+}
+```
+
+unit `gcp` และ `azure` เหมือนกันเป๊ะ ยกเว้น auth block ของ provider ที่ generate ขึ้น — ความต่างของ credential ต่อ cloud แบบเดียวกับที่คุณจัดการให้ ShopMicro ไฟล์ value, secret และ release เหมือนกันทุกที่ ซึ่งเป็นสิ่งที่ทำให้นี่เป็น platform layer
+
+## Verify
+
+plan unit มันควร add namespace, secret และ release:
+
+```bash
+cd live/aws/datadog
+terragrunt plan
+```
+
+```text
+Plan: 3 to add, 0 to change, 0 to destroy.
+  + kubernetes_namespace.datadog
+  + kubernetes_secret.datadog
+  + helm_release.datadog
+```
+
+apply จากนั้นยืนยันว่า agent DaemonSet รันบนทุก node และ Cluster Agent ขึ้นแล้ว:
+
+```bash
+terragrunt apply
+kubectl get pods -n datadog
+```
+
+```text
+NAME                                    READY   STATUS    RESTARTS   AGE
+datadog-agent-4x7kq                     3/3     Running   0          60s
+datadog-agent-9m2lp                     3/3     Running   0          60s
+datadog-cluster-agent-6c9f7d...         1/1     Running   0          60s
+```
+
+pod `datadog-agent-*` หนึ่งตัวต่อ node (มันเป็น DaemonSet) และ `datadog-cluster-agent-*` ตัวเดียวหมายความว่าการเก็บข้อมูลทำงานแล้ว ยืนยันว่า status ของ agent เองแสดงว่า APM และ log เปิดอยู่:
+
+```bash
+kubectl exec -n datadog ds/datadog-agent -c agent -- agent status | grep -A2 -E "APM|Logs Agent"
+```
+
+```text
+APM Agent
+  Status: Running
+Logs Agent
+  Status: Running
+```
+
+สุดท้าย เปิด Infrastructure list ของ Datadog (หรือรัน metric query) แล้วยืนยันว่า host ที่ tag `kube_cluster_name:clouddeploy` และ `env:production` กำลังรายงานอยู่ apply unit `gcp` และ `azure` แล้วคุณจะเห็นทั้งสาม cluster ลงมาใน account เดียวกัน — tag เดียวกัน ต่างกันที่ `cloud` ถ้าไม่มี host ปรากฏ secret ของ API key มักเป็นตัวการ: เช็กว่ามันชื่อ `datadog-secret` พร้อม key `api-key` ใน namespace `datadog`
+
+**ตรวจสอบความเข้าใจ:**
+
+1. ทำไมอ้างอิง API key ด้วย `apiKeyExistingSecret` แทน `datadog.apiKey` ในไฟล์ value?
+2. agent รันเป็น DaemonSet มันรับประกันอะไรเกี่ยวกับว่า pod ของ ShopMicro ตัวไหนจะถูก observe?
+3. ทำไม Datadog agent เป็นส่วนของ platform layer แบบ *cloud-neutral* แทนที่จะเป็น module ต่อ cloud อย่าง `data` หรือ `network`?
+4. `containerCollectAll: true` สะดวกแต่เป็นสายน้ำเชี่ยว คุณจะเพิ่มอะไรใน deployment จริง และทำไม?
+
+## Recap
+
+ตอนนี้ทุก cluster รัน Datadog agent เป็น `helm_release` ที่ Terraform managed: API key อยู่ใน Kubernetes secret แทนที่จะเป็น chart value, APM และ log collection เปิดทั่วทั้ง cluster และทุก metric ถูก tag ด้วย cluster และ environment เพราะมันคือ chart และ value เดียวกันบนทั้งสาม cloud ตอนนี้ Datadog account เดียวเห็น EKS, GKE และ AKS เคียงข้างกัน — cloud-neutral platform layer ทำสิ่งที่มันสัญญาไว้พอดี
+
+การเก็บ telemetry เป็นครึ่งหนึ่งของงาน อีกครึ่งคือการตัดสินใจว่าจะ *เฝ้าดู* อะไร ถัดไป [Dashboards and monitors →](/clouddeploy/th/datadog/dashboards-and-monitors/) นิยามทั้งสองอย่างเป็น code ด้วย Terraform `datadog` provider โดยผูกกับ service ของ ShopMicro และเหมือนกันข้าม cloud

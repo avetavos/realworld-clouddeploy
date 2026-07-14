@@ -1,0 +1,253 @@
+---
+title: Dashboards and monitors as code
+description: "นิยาม dashboard และ monitor ของ ShopMicro ด้วย Terraform datadog provider — source of truth เดียว เหมือนกันข้ามทั้งสาม cloud"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+[Datadog agent](/clouddeploy/th/datadog/the-datadog-agent/) กำลัง stream metric, trace และ log ของ ShopMicro จากทั้งสาม cluster เข้า account เดียว ตอนนี้เราตัดสินใจว่าจะ *ดู* อะไรและจะ *alert* อะไร — และทำมันเป็น code ด้วย Terraform **`datadog` provider** `datadog_dashboard` สำหรับ golden signal ของ ShopMicro และชุด resource `datadog_monitor` สำหรับสิ่งที่ควร page คน
+
+มีจุดพลิกเชิงโครงสร้างตรงนี้ที่ทำให้บทนี้ต่างจากส่วนอื่นของ platform dashboard และ monitor ไม่ได้อยู่ *บน* cluster — มันอยู่ใน SaaS ของ Datadog ซึ่งเห็นทุก cloud อยู่แล้ว ดังนั้นจึงมี definition **เดียว** ที่ apply ครั้งเดียว ไม่ใช่หนึ่งตัวต่อ cloud agent รันสามครั้ง แต่ dashboard นิยามครั้งเดียวและ filter ตาม `kube_cluster_name` เพื่อแสดง AWS, GCP และ Azure ด้วยกัน
+
+ชิ้นส่วนต่าง ๆ:
+
+- `datadog` provider ที่ config ด้วย **API key และ app key** (app key คือสิ่งที่ทำให้ Terraform เขียน dashboard และ monitor ได้ ไม่ใช่แค่ส่ง metric)
+- `datadog_dashboard` พร้อม widget ที่เรียงลำดับสำหรับ request rate, error rate และ latency ของ ShopMicro — tag ไว้เพื่อให้แต่ละ cloud แยกแยะได้
+- resource `datadog_monitor` หลายตัว — error rate สูง, latency สูง, service ที่ down — query service ของ ShopMicro ข้ามทุก cluster
+- unit `live/datadog/monitors` เดียวที่เป็นเจ้าของทั้งหมด cloud-agnostic ตามการออกแบบ
+
+## Why
+
+**ทำไมทำ monitor เป็น code แทนที่จะคลิกประกอบมันใน UI?** เพราะ monitor ที่สร้างใน UI มีอยู่แค่ใน UI — ไม่มีเอกสาร ไม่ถูก review และสร้างซ้ำให้เหมือนเดิมไม่ได้หลังจากมีคนปรับ threshold ตอนตีสอง การนิยามมันใน Terraform ทำให้ทุก threshold เป็น diff ที่ review ได้ version มันร่วมกับ platform ที่เหลือ และหมายความว่า Datadog account ใหม่ถูกทำให้เท่าเทียมได้ด้วย `apply` เดียว การ alert *คือ* infrastructure
+
+**ทำไม definition เดียวแทนที่จะหนึ่งตัวต่อ cloud?** agent ต้องรันบนแต่ละ cluster เพราะมันเก็บข้อมูล local dashboard และ monitor query backend ของ Datadog ที่รวมเป็นหนึ่งแล้ว ซึ่งเห็นทั้งสาม cluster พร้อมกัน การทำซ้ำมันต่อ cloud จะให้ alert เดียวกันสามชุดที่ fire สามครั้ง — noise ไม่ใช่ coverage monitor เดียวที่ query `service:shopmicro-gateway` (ไม่ scope ตาม cloud หรือ group `by {kube_cluster_name}`) ครอบคลุมทั้ง fleet และบอกคุณว่า cloud *ไหน* พัง
+
+**ทำไมผูก query เข้ากับชื่อ service ของ ShopMicro?** alert เรื่อง host CPU ทั่วไปไม่ได้บอกคุณว่า shop down การ query APM metric อย่าง `trace.http.request.errors{service:shopmicro-gateway}` ผูก alert เข้ากับพฤติกรรมที่ผู้ใช้เจอ — golden signal (rate, error, duration) สำหรับ service ที่สำคัญ — ซึ่งเป็นสิ่งที่ทำให้ page นั้น actionable
+
+## Pros & cons
+
+**Monitors as Terraform code vs building them in the Datadog UI**
+
+- **Pros:** diff ที่ review ได้ version ร่วมกับ platform สร้างซ้ำได้ใน account ใด ๆ ไม่มี drift จากการปรับที่ไม่มีเอกสาร
+- **Cons:** การ iterate บน threshold หมายถึง `apply` ไม่ใช่ slider และ query syntax ของ Terraform ค้นพบได้ยากกว่า query builder ของ UI
+
+**One cloud-agnostic definition vs per-cloud dashboards and monitors**
+
+- **Pros:** source of truth เดียว alert เดียวที่ระบุชื่อ cloud ที่พัง ไม่มี noise ซ้ำสามชุด
+- **Cons:** unit อยู่นอก tree `live/<cloud>/` ต่อ cloud ดังนั้นมันไม่เข้ากับจังหวะ `run --all` ต่อ cloud และต้องมี apply ของตัวเอง
+
+## Set it up
+
+### 1. `modules/datadog-monitoring/` (provider + resources)
+
+เพราะมันเล็งไปที่ API ของ Datadog แทนที่จะเป็น cluster จึงไม่มี provider `helm`/`kubernetes` ตรงนี้ — มีแค่ `datadog` provider ที่ key ด้วย API key และ app key
+
+```hcl
+# modules/datadog-monitoring/versions.tf
+terraform {
+  required_providers {
+    datadog = { source = "DataDog/datadog", version = "~> 3.40" }
+  }
+}
+```
+
+```hcl
+# modules/datadog-monitoring/variables.tf
+variable "datadog_api_key" { type = string, sensitive = true }
+variable "datadog_app_key" { type = string, sensitive = true }
+variable "datadog_site"    { type = string, default = "datadoghq.com" }
+variable "services" {
+  type    = list(string)
+  default = ["shopmicro-gateway", "shopmicro-users", "shopmicro-orders"]
+}
+variable "notify" {
+  type    = string
+  default = "@slack-shopmicro-alerts"
+}
+```
+
+```hcl
+# modules/datadog-monitoring/provider.tf
+provider "datadog" {
+  api_key = var.datadog_api_key
+  app_key = var.datadog_app_key
+  api_url = "https://api.${var.datadog_site}/"
+}
+```
+
+### 2. The ShopMicro dashboard
+
+dashboard ที่เรียงลำดับพร้อม golden signal สำหรับ gateway `template_variable` ให้คุณ filter ทั้งบอร์ดตาม cluster ดังนั้น dashboard เดียวแสดง cloud ใด ๆ หรือทั้งหมด
+
+```hcl
+# modules/datadog-monitoring/dashboard.tf
+resource "datadog_dashboard" "shopmicro" {
+  title       = "ShopMicro — Service Health"
+  description  = "Golden signals for ShopMicro across all clouds. Managed by Terraform."
+  layout_type = "ordered"
+
+  template_variable {
+    name    = "cluster"
+    prefix  = "kube_cluster_name"
+    default = "*"
+  }
+
+  widget {
+    timeseries_definition {
+      title = "Request rate by service"
+      request {
+        q            = "sum:trace.http.request.hits{service:shopmicro-*,$cluster} by {service}.as_rate()"
+        display_type = "line"
+      }
+    }
+  }
+
+  widget {
+    timeseries_definition {
+      title = "Error rate — gateway"
+      request {
+        q            = "sum:trace.http.request.errors{service:shopmicro-gateway,$cluster}.as_rate()"
+        display_type = "bars"
+      }
+    }
+  }
+
+  widget {
+    timeseries_definition {
+      title = "p95 latency — gateway"
+      request {
+        q            = "p95:trace.http.request.duration{service:shopmicro-gateway,$cluster}"
+        display_type = "line"
+      }
+    }
+  }
+}
+```
+
+### 3. The monitors
+
+monitor error-rate สูงหนึ่งตัวต่อ service (ผ่าน `for_each`) บวก latency monitor การ group `by {kube_cluster_name}` หมายความว่า monitor เดียว evaluate ทุก cloud และ alert ระบุชื่อตัวที่พัง
+
+```hcl
+# modules/datadog-monitoring/monitors.tf
+resource "datadog_monitor" "error_rate" {
+  for_each = toset(var.services)
+
+  name    = "[ShopMicro] High error rate — ${each.key}"
+  type    = "query alert"
+  message = "Error rate on ${each.key} is elevated on {{kube_cluster_name.name}}. ${var.notify}"
+
+  query = <<-EOT
+    sum(last_5m):(
+      sum:trace.http.request.errors{service:${each.key}} by {kube_cluster_name}.as_count()
+      /
+      sum:trace.http.request.hits{service:${each.key}} by {kube_cluster_name}.as_count()
+    ) > 0.05
+  EOT
+
+  monitor_thresholds {
+    warning  = 0.02
+    critical = 0.05
+  }
+
+  include_tags = true
+  tags         = ["team:shopmicro", "managed-by:terraform"]
+}
+
+resource "datadog_monitor" "gateway_latency" {
+  name    = "[ShopMicro] High p95 latency — gateway"
+  type    = "query alert"
+  message = "Gateway p95 latency is high on {{kube_cluster_name.name}}. ${var.notify}"
+
+  query = "percentile(last_5m):p95:trace.http.request.duration{service:shopmicro-gateway} by {kube_cluster_name} > 1"
+
+  monitor_thresholds {
+    warning  = 0.5
+    critical = 1
+  }
+
+  include_tags = true
+  tags         = ["team:shopmicro", "managed-by:terraform"]
+}
+```
+
+### 4. `live/datadog/monitors/terragrunt.hcl` (one unit, no cluster dependency)
+
+unit นี้ตั้งใจให้อยู่ *นอก* tree `live/{aws,gcp,azure}/` — มันไม่มี cluster ให้ attach มันแค่ต้องการ Datadog key
+
+```hcl
+include "root" { path = find_in_parent_folders("root.hcl") }
+
+terraform { source = "../../../modules/datadog-monitoring" }
+
+inputs = {
+  datadog_api_key = get_env("DD_API_KEY")
+  datadog_app_key = get_env("DD_APP_KEY")
+  notify          = "@slack-shopmicro-alerts"
+}
+```
+
+การเก็บมันไว้ใน tree `live/datadog` ระดับบนของตัวเองเป็นสัญญาณที่ซื่อตรงว่า resource นี้เป็น fleet-wide ไม่ใช่ต่อ cloud — คุณ apply มันครั้งเดียวแล้วมันครอบคลุมทุก cluster ที่ agent รายงานมา
+
+## Verify
+
+plan unit มันควร add dashboard และ monitor หนึ่งตัวต่อ service บวก latency monitor:
+
+```bash
+cd live/datadog/monitors
+terragrunt plan
+```
+
+```text
+Plan: 5 to add, 0 to change, 0 to destroy.
+  + datadog_dashboard.shopmicro
+  + datadog_monitor.error_rate["shopmicro-gateway"]
+  + datadog_monitor.error_rate["shopmicro-users"]
+  + datadog_monitor.error_rate["shopmicro-orders"]
+  + datadog_monitor.gateway_latency
+```
+
+apply แล้ว Terraform จะพิมพ์ ID ของ monitor ที่สร้างและ URL ของ dashboard:
+
+```bash
+terragrunt apply
+```
+
+```text
+datadog_dashboard.shopmicro: Creation complete [id=abc-def-ghi]
+datadog_monitor.gateway_latency: Creation complete [id=12345678]
+
+Apply complete! Resources: 5 added, 0 changed, 0 destroyed.
+```
+
+เปิด URL ของ dashboard แล้วสลับ template variable `cluster` ระหว่าง `clouddeploy` บนแต่ละ cloud — บอร์ดเดียวกันแสดง AWS, GCP หรือทั้งสาม จากนั้นยืนยันว่า monitor ทำงานและ evaluate อยู่จาก CLI:
+
+```bash
+kubectl -n datadog exec ds/datadog-agent -c agent -- agent version >/dev/null # agent still reporting
+curl -sS "https://api.datadoghq.com/api/v1/monitor?monitor_tags=managed-by:terraform" \
+  -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" | jq '.[].name'
+```
+
+```text
+"[ShopMicro] High error rate — shopmicro-gateway"
+"[ShopMicro] High error rate — shopmicro-users"
+"[ShopMicro] High error rate — shopmicro-orders"
+"[ShopMicro] High p95 latency — gateway"
+```
+
+เพื่อพิสูจน์ว่า monitor เฝ้าดูทุก cloud จริง ให้ trigger load เล็กน้อยหรือ error บน ShopMicro ของ cluster หนึ่งแล้วยืนยันว่า alert ระบุชื่อ cluster นั้นผ่าน tag `{{kube_cluster_name.name}}` — monitor เดียว ระบุ cloud ที่ถูกต้อง
+
+**ตรวจสอบความเข้าใจ:**
+
+1. ทำไมมี dashboard/monitor definition เดียวสำหรับทั้งสาม cloud ในเมื่อ Datadog agent ถูก deploy สามครั้ง?
+2. app key ให้สิทธิ์อะไรที่ API key อย่างเดียวไม่ให้?
+3. ทำไมการ group monitor `by {kube_cluster_name}` ถึงสำคัญสำหรับ multi-cloud fleet?
+4. ทำไม unit `live/datadog/monitors` ถึงอยู่นอก tree `live/{aws,gcp,azure}/`?
+
+## Recap
+
+ตอนนี้ observability ของ ShopMicro เป็น code เต็มรูปแบบ: Datadog dashboard ของ golden signal และชุด monitor สำหรับ error และ latency นิยามครั้งเดียวด้วย Terraform `datadog` provider และ apply จาก unit เดียวที่ cloud-agnostic เพราะ monitor group ตาม `kube_cluster_name` definition เดียวเฝ้าดูทั้งสาม cluster และระบุชื่อ cloud ที่พัง — ไม่มี alert ซ้ำสามชุด ไม่มี UI drift ทุก threshold เป็น diff ที่ review ได้
+
+นั่นทำให้ observability สมบูรณ์: ตอนนี้ platform เก็บ telemetry ของตัวเองและรู้ว่าจะ alert อะไร เหมือนกันข้าม cloud ถัดมาคือ identity — [Identity with Keycloak →](/clouddeploy/th/keycloak/) deploy Keycloak นิยาม realm `shopmicro` และ OIDC client แล้ววาง auth จริงไว้หน้า gateway
