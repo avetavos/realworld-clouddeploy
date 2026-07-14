@@ -1,0 +1,184 @@
+---
+title: DRY with Terragrunt
+description: "Drive a reusable module from a live/ unit with include, terraform { source }, and inputs — then apply a whole tree at once with terragrunt run --all."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+The first real slice of the `live/` tree: a small but genuine AWS network module, driven by a Terragrunt **unit** that supplies its inputs, with a shared `root.hcl` that generates the provider once for every unit. Then we'll meet `terragrunt run --all` — apply an entire cloud's tree in dependency order with one command.
+
+This is where the repetition from Module 2 disappears. The three-provider-blocks problem gets solved by writing the provider *once* and generating it everywhere.
+
+## Why
+
+Plain Terraform makes you repeat yourself across directories: the same provider block, the same backend, in every folder that holds state. Terragrunt removes that by letting each unit `include` a shared `root.hcl` and by pointing `terraform { source }` at a module elsewhere in the repo. The unit shrinks to the only thing that's actually unique — its `inputs`.
+
+`terraform { source }` is the key move. Instead of copying a module's files into `live/aws/network`, the unit *references* `modules/aws/network` and passes inputs. One module, many callers, each with its own state. And because Terragrunt understands the `dependency` links between units, `run --all` can plan or apply the whole tree in the right order.
+
+> Recent Terragrunt replaced the old `terragrunt run-all <command>` with `terragrunt run --all <command>`. The old form still works but is deprecated — this course uses `run --all`.
+
+## Pros & cons
+
+**Terragrunt `include` + `generate` vs. copy-pasting provider and backend blocks:**
+
+- **Pros:** Write the provider and backend once in `root.hcl`; every unit inherits them. Change the region or the state bucket in one place and all units follow. The unit files stay tiny and diff-friendly.
+- **Cons:** More moving parts — a generated `provider.tf` appears in each unit at apply time, which surprises people the first time they see it. You trade a little "where did this file come from?" for a lot less duplication.
+
+**`terragrunt run --all` vs. applying each unit by hand:**
+
+- **Pros:** One command builds an entire cloud in dependency order — network, then cluster, then data — resolving `dependency` links automatically. Perfect for standing up or tearing down a whole platform.
+- **Cons:** Bigger blast radius. `run --all apply` touches everything at once, so a bad change lands wider. Use it deliberately; for a single tweak, `cd` into the one unit and apply just that.
+
+## Set it up
+
+### 1. `modules/aws/network` — a small, real module
+
+Not a stub — a genuine (if minimal) network module that Module 4 will grow into the full three-cloud interface. It creates a VPC and two subnets and exposes the contract outputs:
+
+```hcl
+# modules/aws/network/main.tf
+variable "name" { type = string }
+variable "cidr" {
+  type    = string
+  default = "10.0.0.0/16"
+}
+
+resource "aws_vpc" "this" {
+  cidr_block = var.cidr
+  tags       = { Name = var.name }
+}
+
+resource "aws_subnet" "private" {
+  count             = 2
+  vpc_id            = aws_vpc.this.id
+  cidr_block        = cidrsubnet(var.cidr, 8, count.index)
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  tags              = { Name = "${var.name}-private-${count.index}" }
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+output "network_id"         { value = aws_vpc.this.id }
+output "private_subnet_ids" { value = aws_subnet.private[*].id }
+```
+
+A VPC and subnets cost nothing to run, so this is safe to leave applied while you learn.
+
+### 2. `live/aws/root.hcl` — generate the provider once
+
+For this lesson, keep state local (the `remote_state` block is the next lesson's job) and focus on the DRY win: one generated provider for every unit.
+
+```hcl
+# live/aws/root.hcl
+generate "provider" {
+  path      = "provider.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<EOF
+provider "aws" {
+  region = "us-east-1"
+}
+EOF
+}
+```
+
+### 3. `live/aws/network/terragrunt.hcl` — the first unit
+
+The unit is three blocks: pull in the root, point at the module, pass inputs.
+
+```hcl
+# live/aws/network/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+terraform {
+  source = "../../../modules/aws/network"
+}
+
+inputs = {
+  name = "clouddeploy"
+  cidr = "10.0.0.0/16"
+}
+```
+
+That's the entire per-cloud configuration for a network — no provider, no backend, no resource code. It all comes from the root and the module.
+
+### 4. The `dependency` pattern (preview)
+
+Units wire to each other through `dependency`, reading one unit's outputs as another's inputs. The cluster unit (Module 5 builds the module) will look like this:
+
+```hcl
+# live/aws/cluster/terragrunt.hcl — preview of the pattern
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+terraform {
+  source = "../../../modules/aws/cluster"
+}
+
+dependency "network" {
+  config_path = "../network"
+}
+
+inputs = {
+  name       = "clouddeploy"
+  network_id = dependency.network.outputs.network_id
+  subnet_ids = dependency.network.outputs.private_subnet_ids
+  node_count = 2
+  node_size  = "small"
+}
+```
+
+`dependency "network"` is what tells `run --all` to build the network *before* the cluster. Same wiring on every cloud, because the interface is identical.
+
+## Verify
+
+Apply the network unit on its own first:
+
+```bash
+cd live/aws/network
+terragrunt init
+terragrunt plan     # Plan: 3 to add (vpc + 2 subnets), 0 to change, 0 to destroy.
+terragrunt apply    # Apply complete! Resources: 3 added.
+```
+
+Notice Terragrunt wrote a `provider.tf` into the working directory from the root's `generate` block — you never authored it. Now run the whole tree from the cloud root:
+
+```bash
+cd live/aws
+terragrunt run --all plan
+```
+
+```text
+Group 1
+- Unit ./network
+
+The stack at /.../live/aws will be processed in the following order...
+```
+
+Tear it down when you're done exploring:
+
+```bash
+cd live/aws/network
+terragrunt destroy   # Destroy complete! Resources: 3 destroyed.
+```
+
+You're done when a single unit applies cleanly, the generated `provider.tf` appears without you writing it, and `terragrunt run --all plan` discovers the tree.
+
+**Check your understanding:**
+
+1. What are the three blocks in a Terragrunt unit, and what does each contribute?
+2. Where does the `provider.tf` in a unit's working directory come from, and why is that better than writing one per unit?
+3. What does `dependency "network"` do for `terragrunt run --all`, and why can the wiring be identical on all three clouds?
+4. When would you `cd` into a single unit and apply it, rather than reaching for `run --all`?
+
+## Recap
+
+You've turned a reusable module into a live deployment with a three-block Terragrunt unit, generated the provider once for the whole cloud, and applied a tree with `run --all`. The unit files are tiny because everything shared lives in `root.hcl` — everything except the one thing we deliberately left local: state. Next we move state into each cloud's remote backend and add locking.
+
+Next: [Remote state & locking →](/clouddeploy/en/terragrunt/remote-state-and-locking/)
