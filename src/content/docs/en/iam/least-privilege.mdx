@@ -1,0 +1,203 @@
+---
+title: Least privilege
+description: "Scoped cloud IAM for the platform — narrow AWS IAM policies, GCP custom roles, and Azure RBAC assignments that grant exactly what each identity needs."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+The [cluster module](/clouddeploy/en/kubernetes/) gave us a place to run pods. Before any of those pods can touch a cloud API — read a DNS zone, pull a secret, reach a database — something has to say *this identity may do exactly these things and nothing more*. That "something" is cloud IAM, and it looks different on every cloud.
+
+This lesson defines the **scoped policies** the platform needs, per cloud, without yet attaching them to a running workload. That split is deliberate: this lesson answers *"what may this identity do?"*, and the next lesson — [workload identity](/clouddeploy/en/iam/workload-identity/) — answers *"how does a keyless pod become that identity?"*. Getting the policy right first means the binding in the next lesson has something safe to point at.
+
+Concretely we scope one representative permission on each cloud: letting the in-cluster **external-dns** controller manage records in one DNS zone, and nothing else. The same pattern extends to the cluster autoscaler, the CI deploy role, or the ShopMicro workload's database access.
+
+The three IAM models we have to speak:
+
+- **AWS IAM** — *identities* (roles/users) hold *policies*; a policy is a JSON document of `Allow`/`Deny` statements over actions and resource ARNs. We build documents with the `aws_iam_policy_document` data source.
+- **GCP IAM** — you bind a *member* to a *role* on a *resource* (project, bucket, …). Roles are collections of permissions; prefer a narrow **custom role** over broad predefined roles like `roles/dns.admin`.
+- **Azure RBAC** — a *role definition* (a set of allowed `Actions`) is assigned to a *principal* over a *scope* (subscription, resource group, single resource). Narrow the scope, not just the role.
+
+## Why
+
+Least privilege is about **blast radius**. If a pod is compromised — a bad dependency, an SSRF, a leaked token — the damage is bounded by exactly what its identity was allowed to do. A DNS controller that can only edit one zone cannot delete your database; the same controller holding `roles/editor` or `Contributor` on the whole subscription can end the company.
+
+It also makes the three clouds legible. Wildcards (`Action: "*"`, `roles/editor`, the `Owner` role) hide intent — nobody reading the code can tell what the workload actually needs. A scoped policy *is* the documentation: the permission list is the contract. Multi-cloud makes this sharper because you write the same intent three times, and the only way to keep them honest is to keep each one narrow enough to read.
+
+## Pros & cons
+
+**Managed/predefined policies vs custom least-privilege policies**
+
+- **Pros:** AWS managed policies (`AmazonEKS_CNI_Policy`), GCP predefined roles (`roles/dns.admin`), and Azure built-in roles (`DNS Zone Contributor`) are maintained by the cloud, stay current as APIs change, and are one line to attach.
+- **Cons:** they're written for the general case, so they almost always grant more than your workload uses. For the platform's own controllers we prefer a hand-scoped policy; managed policies are a reasonable starting point you then tighten.
+
+**Broad scope vs resource-scoped**
+
+- **Pros:** granting a role at the project/subscription level (or `Resource: "*"`) never breaks with a "permission denied" — it just works, and it's less code.
+- **Cons:** it's the failure mode least-privilege exists to prevent. Scoping to the specific zone, bucket, or resource group costs a few more lines and the occasional deploy-time denial you have to widen deliberately — which is the point: every widening is a visible decision in the diff.
+
+## Set it up
+
+The `iam` module has the same interface on every cloud (in the next lesson: `cluster_name`, `namespace`, `service_account`). Here we add the *policy* each cloud's implementation will later attach to its workload identity.
+
+### 1. `modules/aws/iam/policies.tf`
+
+Build a JSON policy document scoped to a single Route 53 hosted zone, then wrap it as a customer-managed policy.
+
+```hcl
+variable "name" {
+  type = string
+}
+
+variable "dns_zone_arn" {
+  type        = string
+  description = "ARN of the Route 53 hosted zone external-dns may manage"
+}
+
+data "aws_iam_policy_document" "external_dns" {
+  statement {
+    sid       = "ChangeRecordSets"
+    effect    = "Allow"
+    actions   = ["route53:ChangeResourceRecordSets"]
+    resources = [var.dns_zone_arn]
+  }
+
+  statement {
+    sid       = "ListZones"
+    effect    = "Allow"
+    actions   = ["route53:ListHostedZones", "route53:ListResourceRecordSets"]
+    resources = ["*"] # these list calls are not resource-scopable
+  }
+}
+
+resource "aws_iam_policy" "external_dns" {
+  name   = "${var.name}-external-dns"
+  policy = data.aws_iam_policy_document.external_dns.json
+}
+```
+
+Note the honesty in the second statement: some AWS list actions genuinely cannot be resource-scoped, so `"*"` there is correct rather than lazy — and it's read-only. The write action, the dangerous one, is pinned to one zone.
+
+### 2. `modules/gcp/iam/policies.tf`
+
+Prefer a **custom role** with just the DNS permissions external-dns needs over the broad `roles/dns.admin`.
+
+```hcl
+variable "project_id" {
+  type = string
+}
+
+variable "name" {
+  type = string
+}
+
+resource "google_project_iam_custom_role" "external_dns" {
+  role_id     = replace("${var.name}_external_dns", "-", "_")
+  title       = "${var.name} external-dns"
+  description = "Minimal DNS record management for external-dns"
+  permissions = [
+    "dns.managedZones.list",
+    "dns.resourceRecordSets.create",
+    "dns.resourceRecordSets.delete",
+    "dns.resourceRecordSets.list",
+    "dns.resourceRecordSets.update",
+    "dns.changes.create",
+    "dns.changes.get",
+  ]
+}
+```
+
+The next lesson binds a Google service account to this role. GCP scopes the *role* tightly; you can narrow the *resource* further by binding on a specific managed zone instead of the whole project.
+
+### 3. `modules/azure/iam/policies.tf`
+
+Azure has a built-in `DNS Zone Contributor` role, but built-in roles can't be scope-limited in their action set — so here we author a **custom role definition** and, in the next lesson, assign it over just one resource group.
+
+```hcl
+variable "name" {
+  type = string
+}
+
+variable "scope_id" {
+  type        = string
+  description = "Resource group ID the DNS role may act within"
+}
+
+resource "azurerm_role_definition" "external_dns" {
+  name        = "${var.name}-external-dns"
+  scope       = var.scope_id
+  description = "Minimal DNS record management for external-dns"
+
+  permissions {
+    actions = [
+      "Microsoft.Network/dnsZones/read",
+      "Microsoft.Network/dnsZones/A/read",
+      "Microsoft.Network/dnsZones/A/write",
+      "Microsoft.Network/dnsZones/A/delete",
+      "Microsoft.Network/dnsZones/TXT/read",
+      "Microsoft.Network/dnsZones/TXT/write",
+      "Microsoft.Network/dnsZones/TXT/delete",
+    ]
+    not_actions = []
+  }
+
+  assignable_scopes = [var.scope_id]
+}
+```
+
+Every one of these lives in `modules/<cloud>/iam/` and is consumed by the same-cloud `workload-identity` code in the next lesson — no `live/` unit exists yet, because a policy with nothing attached is inert.
+
+## Verify
+
+These are module-level definitions, so verify them where they get wired: a `terragrunt plan` on the `iam` unit (built in the next lesson) will show the policy/role being created. In the meantime, sanity-check each policy document in isolation.
+
+```bash
+# AWS: render and eyeball the JSON before it becomes a real policy
+cd modules/aws/iam
+terraform init
+terraform plan -target=aws_iam_policy.external_dns
+```
+
+```text
+# aws_iam_policy.external_dns will be created
++ resource "aws_iam_policy" "external_dns" {
+    + name   = "clouddeploy-external-dns"
+    + policy = jsonencode(
+        {
+          Statement = [
+            { Action = "route53:ChangeResourceRecordSets", Effect = "Allow", ... },
+            ...
+        }
+      )
+  }
+```
+
+```bash
+# GCP: confirm the custom role carries only the permissions you listed
+gcloud iam roles describe clouddeploy_external_dns \
+  --project "$PROJECT_ID" --format="value(includedPermissions)"
+# => dns.changes.create;dns.changes.get;dns.managedZones.list;...  (no dns.*.admin)
+```
+
+```bash
+# Azure: confirm the custom role's actions are exactly what you declared
+az role definition list --name "clouddeploy-external-dns" \
+  --query "[0].permissions[0].actions" -o tsv
+# => Microsoft.Network/dnsZones/read  Microsoft.Network/dnsZones/A/read ...
+```
+
+Finally, run a full `terragrunt run --all plan` on the cloud you're working in and confirm the plan adds **only** the policy/role objects — no roles, assignments, or bindings yet. Those come next.
+
+**Check your understanding:**
+
+1. Why do we define the policy in this lesson but not attach it to any identity until the next one?
+2. In the AWS document, one statement uses `resources = ["*"]`. Why is that not a least-privilege violation here?
+3. What's the difference between narrowing the *role* and narrowing the *scope* — and which does each cloud make easier?
+4. A teammate proposes attaching AWS's managed `AmazonRoute53FullAccess` to save time. What concretely is the risk, and what would you counter-propose?
+
+## Recap
+
+We built the *permission* half of platform IAM: a narrowly-scoped policy on each cloud — an `aws_iam_policy` document, a GCP custom role, and an Azure custom role definition — expressing exactly what one controller may do. We saw that the three IAM models (AWS policies, GCP role bindings, Azure RBAC assignments) express the same intent differently, and that keeping each one narrow is what makes multi-cloud IAM readable and bounds the blast radius of a compromise.
+
+These policies are inert until something assumes them without a static key. Next, [Workload identity →](/clouddeploy/en/iam/workload-identity/) builds the `iam` module that hands one of these identities to a pod — IRSA on AWS, Workload Identity on GCP, Managed Identity on Azure — with no long-lived credentials anywhere.

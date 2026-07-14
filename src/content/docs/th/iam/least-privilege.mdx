@@ -1,0 +1,203 @@
+---
+title: Least privilege
+description: "cloud IAM แบบ scope สำหรับ platform — AWS IAM policy ที่แคบ, GCP custom role, และ Azure RBAC assignment ที่ให้สิทธิ์เท่าที่แต่ละ identity ต้องการพอดี"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+[cluster module](/clouddeploy/th/kubernetes/) ให้ที่รัน pod แก่เรา ก่อนที่ pod พวกนั้นจะแตะ cloud API ได้ — อ่าน DNS zone, ดึง secret, เข้าถึง database — ต้องมีบางอย่างบอกว่า *identity นี้ทำได้เฉพาะสิ่งเหล่านี้เท่านั้นและไม่มากกว่านั้น* "บางอย่าง" นั้นคือ cloud IAM และมันหน้าตาต่างกันบนทุก cloud
+
+บทนี้นิยาม **policy แบบ scope** ที่ platform ต้องการ ต่อ cloud โดยยังไม่ attach เข้ากับ workload ที่รันอยู่ การแยกนั้นตั้งใจ: บทนี้ตอบว่า *"identity นี้ทำอะไรได้?"* และบทถัดไป — [workload identity](/clouddeploy/th/iam/workload-identity/) — ตอบว่า *"pod ที่ไม่มี key กลายเป็น identity นั้นได้อย่างไร?"* ทำ policy ให้ถูกก่อนหมายความว่า binding ในบทถัดไปมีอะไรที่ปลอดภัยให้ชี้ไป
+
+รูปธรรมคือเรา scope permission ตัวแทนหนึ่งตัวบนแต่ละ cloud: ให้ controller **external-dns** ที่อยู่ใน cluster จัดการ record ใน DNS zone เดียว และไม่มีอย่างอื่น pattern เดียวกันขยายไปถึง cluster autoscaler, CI deploy role, หรือ database access ของ workload ShopMicro
+
+IAM model สามแบบที่เราต้องพูดได้:
+
+- **AWS IAM** — *identity* (role/user) ถือ *policy*; policy คือ JSON document ของ statement `Allow`/`Deny` เหนือ action และ resource ARN เราสร้าง document ด้วย data source `aws_iam_policy_document`
+- **GCP IAM** — คุณ bind *member* เข้ากับ *role* บน *resource* (project, bucket, …) role คือชุดของ permission; เลือก **custom role** ที่แคบดีกว่า predefined role ที่กว้างอย่าง `roles/dns.admin`
+- **Azure RBAC** — *role definition* (ชุดของ `Actions` ที่อนุญาต) ถูก assign ให้ *principal* เหนือ *scope* (subscription, resource group, resource เดียว) แคบ scope ไม่ใช่แค่ role
+
+## Why
+
+least privilege คือเรื่องของ **blast radius** ถ้า pod ถูก compromise — dependency ที่ไม่ดี, SSRF, token ที่รั่ว — ความเสียหายถูกจำกัดด้วยสิ่งที่ identity ของมันได้รับอนุญาตให้ทำพอดี DNS controller ที่แก้ได้แค่ zone เดียวลบ database ของคุณไม่ได้; controller ตัวเดียวกันที่ถือ `roles/editor` หรือ `Contributor` เหนือ subscription ทั้งก้อนจบบริษัทได้
+
+มันยังทำให้ cloud ทั้งสามอ่านออก wildcard (`Action: "*"`, `roles/editor`, role `Owner`) ซ่อนเจตนา — ไม่มีใครที่อ่าน code บอกได้ว่า workload ต้องการอะไรจริง ๆ policy ที่ scope *คือ* documentation: รายการ permission คือ contract multi-cloud ทำให้เรื่องนี้ชัดขึ้น เพราะคุณเขียนเจตนาเดียวกันสามครั้ง และทางเดียวที่จะให้มันซื่อสัตย์คือคงแต่ละตัวให้แคบพอที่จะอ่านได้
+
+## Pros & cons
+
+**Managed/predefined policy vs custom least-privilege policy**
+
+- **Pros:** AWS managed policy (`AmazonEKS_CNI_Policy`), GCP predefined role (`roles/dns.admin`), และ Azure built-in role (`DNS Zone Contributor`) ถูกดูแลโดย cloud, อัปเดตตาม API ที่เปลี่ยน, และ attach ได้ในบรรทัดเดียว
+- **Cons:** มันเขียนมาสำหรับ general case ดังนั้นมันแทบจะให้สิทธิ์มากกว่าที่ workload ใช้เสมอ สำหรับ controller ของ platform เองเราเลือก policy ที่ scope ด้วยมือ; managed policy เป็นจุดเริ่มต้นที่สมเหตุสมผลแล้วคุณค่อยรัดให้แน่นขึ้น
+
+**Broad scope vs resource-scoped**
+
+- **Pros:** การให้ role ที่ระดับ project/subscription (หรือ `Resource: "*"`) ไม่เคยพังด้วย "permission denied" — มันแค่ทำงาน และ code น้อยกว่า
+- **Cons:** มันคือ failure mode ที่ least-privilege มีอยู่เพื่อป้องกัน การ scope ไปที่ zone, bucket, หรือ resource group เฉพาะ costs ไม่กี่บรรทัดเพิ่ม และการโดน deny ตอน deploy เป็นครั้งคราวที่คุณต้องขยายโดยตั้งใจ — ซึ่งนั่นคือประเด็น: การขยายทุกครั้งเป็นการตัดสินใจที่มองเห็นได้ใน diff
+
+## Set it up
+
+`iam` module มี interface เดียวกันบนทุก cloud (ในบทถัดไป: `cluster_name`, `namespace`, `service_account`) ตรงนี้เราเพิ่ม *policy* ที่ implementation ของแต่ละ cloud จะ attach เข้ากับ workload identity ของมันภายหลัง
+
+### 1. `modules/aws/iam/policies.tf`
+
+สร้าง JSON policy document ที่ scope ไปที่ Route 53 hosted zone เดียว แล้ว wrap มันเป็น customer-managed policy
+
+```hcl
+variable "name" {
+  type = string
+}
+
+variable "dns_zone_arn" {
+  type        = string
+  description = "ARN of the Route 53 hosted zone external-dns may manage"
+}
+
+data "aws_iam_policy_document" "external_dns" {
+  statement {
+    sid       = "ChangeRecordSets"
+    effect    = "Allow"
+    actions   = ["route53:ChangeResourceRecordSets"]
+    resources = [var.dns_zone_arn]
+  }
+
+  statement {
+    sid       = "ListZones"
+    effect    = "Allow"
+    actions   = ["route53:ListHostedZones", "route53:ListResourceRecordSets"]
+    resources = ["*"] # these list calls are not resource-scopable
+  }
+}
+
+resource "aws_iam_policy" "external_dns" {
+  name   = "${var.name}-external-dns"
+  policy = data.aws_iam_policy_document.external_dns.json
+}
+```
+
+สังเกตความซื่อสัตย์ใน statement ที่สอง: บาง AWS list action scope ไปที่ resource ไม่ได้จริง ๆ ดังนั้น `"*"` ตรงนั้นจึงถูกต้องแทนที่จะขี้เกียจ — และมันเป็น read-only write action ตัวที่อันตราย ถูกปักหมุดไว้ที่ zone เดียว
+
+### 2. `modules/gcp/iam/policies.tf`
+
+เลือก **custom role** ที่มีแค่ DNS permission ที่ external-dns ต้องการ ดีกว่า `roles/dns.admin` ที่กว้าง
+
+```hcl
+variable "project_id" {
+  type = string
+}
+
+variable "name" {
+  type = string
+}
+
+resource "google_project_iam_custom_role" "external_dns" {
+  role_id     = replace("${var.name}_external_dns", "-", "_")
+  title       = "${var.name} external-dns"
+  description = "Minimal DNS record management for external-dns"
+  permissions = [
+    "dns.managedZones.list",
+    "dns.resourceRecordSets.create",
+    "dns.resourceRecordSets.delete",
+    "dns.resourceRecordSets.list",
+    "dns.resourceRecordSets.update",
+    "dns.changes.create",
+    "dns.changes.get",
+  ]
+}
+```
+
+บทถัดไป bind Google service account เข้ากับ role นี้ GCP scope *role* ให้แน่น; คุณย่อ *resource* ให้แคบลงได้อีกด้วยการ bind บน managed zone เฉพาะแทนที่จะเป็นทั้ง project
+
+### 3. `modules/azure/iam/policies.tf`
+
+Azure มี built-in role `DNS Zone Contributor` แต่ built-in role จำกัด scope ในชุด action ของมันไม่ได้ — ตรงนี้เราจึง author **custom role definition** และในบทถัดไป assign มันเหนือ resource group เดียว
+
+```hcl
+variable "name" {
+  type = string
+}
+
+variable "scope_id" {
+  type        = string
+  description = "Resource group ID the DNS role may act within"
+}
+
+resource "azurerm_role_definition" "external_dns" {
+  name        = "${var.name}-external-dns"
+  scope       = var.scope_id
+  description = "Minimal DNS record management for external-dns"
+
+  permissions {
+    actions = [
+      "Microsoft.Network/dnsZones/read",
+      "Microsoft.Network/dnsZones/A/read",
+      "Microsoft.Network/dnsZones/A/write",
+      "Microsoft.Network/dnsZones/A/delete",
+      "Microsoft.Network/dnsZones/TXT/read",
+      "Microsoft.Network/dnsZones/TXT/write",
+      "Microsoft.Network/dnsZones/TXT/delete",
+    ]
+    not_actions = []
+  }
+
+  assignable_scopes = [var.scope_id]
+}
+```
+
+ทุกตัวเหล่านี้อยู่ใน `modules/<cloud>/iam/` และถูก consume โดย code `workload-identity` ของ cloud เดียวกันในบทถัดไป — ยังไม่มี `live/` unit เพราะ policy ที่ไม่มีอะไร attach คือ inert
+
+## Verify
+
+พวกนี้เป็น definition ระดับ module ดังนั้นให้ verify มันตรงที่มันถูกต่อสาย: `terragrunt plan` บน `iam` unit (สร้างในบทถัดไป) จะแสดง policy/role ที่กำลังถูกสร้าง ระหว่างนี้ sanity-check แต่ละ policy document แบบแยกเดี่ยว
+
+```bash
+# AWS: render and eyeball the JSON before it becomes a real policy
+cd modules/aws/iam
+terraform init
+terraform plan -target=aws_iam_policy.external_dns
+```
+
+```text
+# aws_iam_policy.external_dns will be created
++ resource "aws_iam_policy" "external_dns" {
+    + name   = "clouddeploy-external-dns"
+    + policy = jsonencode(
+        {
+          Statement = [
+            { Action = "route53:ChangeResourceRecordSets", Effect = "Allow", ... },
+            ...
+        }
+      )
+  }
+```
+
+```bash
+# GCP: confirm the custom role carries only the permissions you listed
+gcloud iam roles describe clouddeploy_external_dns \
+  --project "$PROJECT_ID" --format="value(includedPermissions)"
+# => dns.changes.create;dns.changes.get;dns.managedZones.list;...  (no dns.*.admin)
+```
+
+```bash
+# Azure: confirm the custom role's actions are exactly what you declared
+az role definition list --name "clouddeploy-external-dns" \
+  --query "[0].permissions[0].actions" -o tsv
+# => Microsoft.Network/dnsZones/read  Microsoft.Network/dnsZones/A/read ...
+```
+
+สุดท้าย รัน `terragrunt run --all plan` เต็มบน cloud ที่คุณทำงานอยู่ แล้วยืนยันว่า plan เพิ่ม **เฉพาะ** policy/role object — ยังไม่มี role, assignment, หรือ binding พวกนั้นมาต่อไป
+
+**ตรวจสอบความเข้าใจ:**
+
+1. ทำไมเราถึงนิยาม policy ในบทนี้ แต่ไม่ attach มันเข้ากับ identity ตัวไหนจนถึงบทถัดไป?
+2. ใน AWS document statement หนึ่งใช้ `resources = ["*"]` ทำไมนั่นถึงไม่ใช่การละเมิด least-privilege ตรงนี้?
+3. ความต่างระหว่างการย่อ *role* กับการย่อ *scope* คืออะไร — และแต่ละ cloud ทำอันไหนให้ง่ายกว่า?
+4. เพื่อนร่วมทีมเสนอ attach managed `AmazonRoute53FullAccess` ของ AWS เพื่อประหยัดเวลา ความเสี่ยงเป็นรูปธรรมคืออะไร และคุณจะเสนอกลับว่าอย่างไร?
+
+## Recap
+
+เราสร้างครึ่ง *permission* ของ platform IAM: policy ที่ scope แคบบนแต่ละ cloud — `aws_iam_policy` document, GCP custom role, และ Azure custom role definition — ที่แสดงออกว่า controller ตัวหนึ่งทำอะไรได้พอดี เราเห็นว่า IAM model ทั้งสาม (AWS policy, GCP role binding, Azure RBAC assignment) แสดงเจตนาเดียวกันต่างกัน และการคงแต่ละตัวให้แคบคือสิ่งที่ทำให้ multi-cloud IAM อ่านออกและจำกัด blast radius ของการ compromise
+
+policy พวกนี้เป็น inert จนกว่าบางอย่างจะ assume มันโดยไม่มี static key ต่อไป [Workload identity →](/clouddeploy/th/iam/workload-identity/) สร้าง `iam` module ที่ยื่น identity ตัวหนึ่งเหล่านี้ให้ pod — IRSA บน AWS, Workload Identity บน GCP, Managed Identity บน Azure — โดยไม่มี long-lived credential อยู่ที่ไหนเลย

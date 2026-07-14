@@ -1,0 +1,264 @@
+---
+title: Workload identity
+description: "iam module — IRSA บน AWS, Workload Identity บน GCP, Managed Identity บน Azure — เพื่อให้ pod ได้ cloud access แบบ scope โดยไม่มี static key"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+ใน [บทที่แล้ว](/clouddeploy/th/iam/least-privilege/) เรานิยาม *ว่า* identity ทำอะไรได้ ตอนนี้เราสร้าง `iam` module: กลไกที่ทำให้ **Kubernetes service account เฉพาะตัวหนึ่ง** กลายเป็น cloud identity นั้น **โดยไม่มี long-lived credential แม้แต่ตัวเดียว** ใน cluster
+
+ทุก cloud แก้เรื่องนี้ด้วยแนวคิดเดียวกัน — [OIDC issuer](/clouddeploy/th/kubernetes/) ของ cluster เซ็น token อายุสั้นให้ pod และ cloud trust issuer นั้นสำหรับ service account เดียวเป๊ะ — แต่ตั้งชื่อมันต่างกัน: **IRSA** (IAM Roles for Service Accounts) บน AWS, **Workload Identity** บน GCP, **Managed Identity พร้อม federated credential** บน Azure
+
+module คง interface จาก contract ไว้ เหมือนกันบนทั้งสาม cloud:
+
+- **in:** `cluster_name`, `namespace`, `service_account`
+- **out:** binding id — IRSA role ARN (AWS), Google service account email (GCP), หรือ managed-identity client id (Azure)
+
+`live/<cloud>/iam/` unit ส่ง input สามตัวนั้นและรับ id หนึ่งตัวกลับ ซึ่ง annotation ของ service account ShopMicro จะ consume trust ถูก scope ไปที่ `namespace` + `service_account` พอดี: ไม่มี pod อื่น ใน namespace อื่น assume identity นี้ได้
+
+## Why
+
+static cloud key ใน cluster คือ breach คลาสสิก: `AWS_SECRET_ACCESS_KEY` ใน Secret ถูกดึงออกไป และมันใช้ได้จนกว่าจะมีคน notice แล้ว rotate — ซึ่งปกติคือไม่เคย workload identity เอา secret ออกทั้งหมด pod นำเสนอ **projected, short-lived, audience-bound token** ที่ cluster mint; cloud validate signature ของมันกับ OIDC issuer ของ cluster และเช็ค claim `sub` ว่าเท่ากับ service account ตัวเดียวที่คุณ trust ไม่มีอะไรให้รั่ว ไม่มีอะไรให้ rotate
+
+มันยังเป็นทางเดียวที่ least privilege ไปถึง pod จริง policy ที่ scope จากบทที่แล้วไร้ค่าถ้าทุก pod แชร์ identity ระดับ node ตัวเดียว — policy ที่แคบจะ over-grant ให้ node หรือไม่ก็ไม่เคยถูกใช้ การ bind *ต่อ service account* คือสิ่งที่ทำให้ pod ของ ShopMicro ถือ permission *ของ ShopMicro* และ DNS controller ถือ *เฉพาะ* DNS
+
+## Pros & cons
+
+**Workload identity vs static key ใน Secret**
+
+- **Pros:** ไม่มี long-lived credential อยู่ ดังนั้นไม่มีอะไรรั่วได้; token ถูก mint ต่อ pod, อายุสั้น, และ audience-scoped; trust ถูกปักหมุดที่ `namespace/service_account` เดียว; rotation อัตโนมัติ
+- **Cons:** มีชิ้นส่วนที่ต้องตั้งขึ้นมามากกว่า (OIDC provider, trust/federation relationship, service account ที่มี annotation) และ failure mode ก็ subtle กว่า — พิมพ์ claim `sub` ผิดตัวจะ fail closed ด้วย "access denied" ที่คลุมเครือแทนที่จะเป็น "bad key" ที่ชัดเจน
+
+**Node identity ที่แชร์ตัวเดียว vs identity ต่อ service account**
+
+- **Pros ของ node identity:** ง่ายสุด ๆ — attach role เข้ากับ node group แล้วทุก pod สืบทอดมัน
+- **Cons:** ทุก pod บน node แชร์ *union* ของทุก permission ที่ pod ใดต้องการ ซึ่งตรงข้ามกับ least privilege identity ต่อ service account setup มากกว่าแต่คง blast radius ของแต่ละ workload ให้เป็นของตัวเอง
+
+## Set it up
+
+แต่ละ implementation อ่าน OIDC issuer ของ cluster (output ของ cluster module), สร้าง trust ให้ service account เดียว, และ attach policy จากบทที่แล้ว
+
+### 1. `modules/aws/iam/main.tf` — IRSA
+
+Look up OIDC issuer ของ cluster ด้วยชื่อ, register มันเป็น IAM OIDC provider, และเขียน assume-role policy ที่ condition `sub` ปักหมุด service account เดียวเป๊ะ
+
+```hcl
+variable "cluster_name"    { type = string }
+variable "namespace"       { type = string }
+variable "service_account" { type = string }
+
+data "aws_eks_cluster" "this" {
+  name = var.cluster_name
+}
+
+data "tls_certificate" "oidc" {
+  url = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+}
+
+resource "aws_iam_openid_connect_provider" "this" {
+  url             = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
+}
+
+data "aws_iam_policy_document" "assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.this.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.this.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:${var.namespace}:${var.service_account}"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.this.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "this" {
+  name               = "${var.cluster_name}-${var.namespace}-${var.service_account}"
+  assume_role_policy = data.aws_iam_policy_document.assume.json
+}
+
+# attach the scoped policy from the least-privilege lesson
+resource "aws_iam_role_policy_attachment" "external_dns" {
+  role       = aws_iam_role.this.name
+  policy_arn = aws_iam_policy.external_dns.arn
+}
+
+output "binding_id" {
+  description = "IRSA role ARN to annotate onto the Kubernetes service account"
+  value       = aws_iam_role.this.arn
+}
+```
+
+service account ของ pod จากนั้นพก annotation `eks.amazonaws.com/role-arn` ตั้งค่าเป็น ARN นี้
+
+### 2. `modules/gcp/iam/main.tf` — Workload Identity
+
+สร้าง Google service account, ให้สิทธิ์ Kubernetes service account impersonate มันผ่าน binding `roles/iam.workloadIdentityUser`, และ attach custom role
+
+```hcl
+variable "cluster_name"    { type = string }
+variable "namespace"       { type = string }
+variable "service_account" { type = string }
+
+data "google_project" "current" {}
+
+resource "google_service_account" "this" {
+  account_id   = "${var.service_account}-wi"
+  display_name = "Workload identity for ${var.namespace}/${var.service_account}"
+}
+
+# let the K8s SA impersonate this Google SA
+resource "google_service_account_iam_member" "wi_user" {
+  service_account_id = google_service_account.this.name
+  role               = "roles/iam.workloadIdentityUser"
+  member = "serviceAccount:${data.google_project.current.project_id}.svc.id.goog[${var.namespace}/${var.service_account}]"
+}
+
+# attach the custom role from the least-privilege lesson
+resource "google_project_iam_member" "external_dns" {
+  project = data.google_project.current.project_id
+  role    = google_project_iam_custom_role.external_dns.id
+  member  = "serviceAccount:${google_service_account.this.email}"
+}
+
+output "binding_id" {
+  description = "Google service account email to annotate onto the Kubernetes service account"
+  value       = google_service_account.this.email
+}
+```
+
+string `member` คือ workload-identity pool binding — `PROJECT.svc.id.goog[NAMESPACE/KSA]` คือสิ่งที่ปักหมุดการ impersonate ไปที่ Kubernetes service account เดียว service account ของ pod พก annotation `iam.gke.io/gcp-service-account` ตั้งค่าเป็น email นี้ (Workload Identity ต้องเปิดใช้บน cluster — config `workload_pool` จาก [cluster module](/clouddeploy/th/kubernetes/))
+
+### 3. `modules/azure/iam/main.tf` — Managed Identity
+
+สร้าง user-assigned identity, federate มันเข้ากับ OIDC issuer ของ cluster สำหรับ service account เดียว, และ assign custom role เหนือ resource group เดียว
+
+```hcl
+variable "cluster_name"    { type = string }
+variable "namespace"       { type = string }
+variable "service_account" { type = string }
+
+# the AKS cluster lives in the platform resource group (named after the platform)
+variable "resource_group_name" {
+  type    = string
+  default = "clouddeploy"
+}
+
+data "azurerm_resource_group" "this" {
+  name = var.resource_group_name
+}
+
+data "azurerm_kubernetes_cluster" "this" {
+  name                = var.cluster_name
+  resource_group_name = var.resource_group_name
+}
+
+resource "azurerm_user_assigned_identity" "this" {
+  name                = "${var.cluster_name}-${var.namespace}-${var.service_account}"
+  location            = data.azurerm_kubernetes_cluster.this.location
+  resource_group_name = var.resource_group_name
+}
+
+resource "azurerm_federated_identity_credential" "this" {
+  name                      = "${var.namespace}-${var.service_account}"
+  resource_group_name       = var.resource_group_name
+  parent_id                 = azurerm_user_assigned_identity.this.id
+  audience                  = ["api://AzureADTokenExchange"]
+  issuer                    = data.azurerm_kubernetes_cluster.this.oidc_issuer_url
+  subject                   = "system:serviceaccount:${var.namespace}:${var.service_account}"
+}
+
+# assign the custom role from the least-privilege lesson, scoped to the RG
+resource "azurerm_role_assignment" "external_dns" {
+  scope              = data.azurerm_resource_group.this.id
+  role_definition_id = azurerm_role_definition.external_dns.role_definition_resource_id
+  principal_id       = azurerm_user_assigned_identity.this.principal_id
+}
+
+output "binding_id" {
+  description = "Managed-identity client id to annotate onto the Kubernetes service account"
+  value       = azurerm_user_assigned_identity.this.client_id
+}
+```
+
+implementation ของ Azure ต้องมี input เพิ่มหนึ่งตัว `resource_group_name` เพื่อหา cluster — มัน default เป็นชื่อ platform ดังนั้น `live/` unit ยังส่งแค่ interface input สามตัว service account ของ pod พก annotation `azure.workload.identity/client-id` ตั้งค่าเป็น client id นี้ (และ pod template ของมันพก label `azure.workload.identity/use: "true"`)
+
+### 4. `live/aws/iam/terragrunt.hcl`
+
+unit ต่อสาย input สามตัวเดียวกันบนทุก cloud (เปลี่ยนแค่ `source` สำหรับ `gcp`/`azure`):
+
+```hcl
+include "root" { path = find_in_parent_folders("root.hcl") }
+terraform { source = "../../../modules/aws/iam" }
+
+dependency "cluster" { config_path = "../cluster" }
+
+inputs = {
+  cluster_name    = dependency.cluster.outputs.cluster_name
+  namespace       = "platform"
+  service_account = "external-dns"
+}
+```
+
+## Verify
+
+Apply unit แล้วยืนยันว่า identity ทำงานจาก pod จริงที่ไม่ถือ key เลย
+
+```bash
+cd live/aws/iam
+terragrunt apply
+terragrunt output binding_id
+# => "arn:aws:iam::123456789012:role/clouddeploy-platform-external-dns"
+```
+
+Annotate service account ด้วย id แล้วเช็ค trust จากใน​ cluster:
+
+```bash
+kubectl -n platform annotate serviceaccount external-dns \
+  eks.amazonaws.com/role-arn="$(terragrunt output -raw binding_id)"
+
+# run a throwaway pod on that service account — no AWS keys mounted
+kubectl -n platform run whoami --rm -it --restart=Never \
+  --overrides='{"spec":{"serviceAccountName":"external-dns"}}' \
+  --image=amazon/aws-cli -- sts get-caller-identity
+```
+
+```text
+{
+  "UserId": "AROA...:botocore-session-...",
+  "Account": "123456789012",
+  "Arn": "arn:aws:sts::123456789012:assumed-role/clouddeploy-platform-external-dns/botocore-session-..."
+}
+```
+
+pod authenticate เป็น IRSA role โดย **ไม่มี static credential อยู่ที่ไหนเลย** — นั่นคือหัวใจทั้งหมด บน GCP verify แบบเทียบเท่าด้วย `gcloud auth list` (หรือ `curl` ไป metadata server) จาก pod และบน Azure ด้วย `az login --federated-token` การโดน deny ตรงนี้แทบทุกครั้งหมายความว่า string `sub`/`subject` ไม่ตรงกับ `system:serviceaccount:<namespace>:<service_account>` เป๊ะ
+
+สุดท้าย `terragrunt run --all plan` ข้าม tree ควรแสดง `iam` unit ที่ converged บนทุก cloud
+
+**ตรวจสอบความเข้าใจ:**
+
+1. cloud เช็คอะไรกันแน่ตอนที่ pod นำเสนอ token ของมัน และทำไมนั่นถึงทำให้ static key ไม่จำเป็น?
+2. ใน IRSA assume-role policy condition `:sub` ปักหมุดอะไร และอะไรพังถ้ามันผิดไปนิดเดียว?
+3. GCP และ Azure ทั้งคู่แสดงออกว่า "Kubernetes service account ตัวเดียวนี้กลายเป็น cloud identity นี้ได้" แต่ละตัว encode binding นั้นไว้ที่ไหน?
+4. ทำไมการ bind ต่อ service account (แทนที่จะต่อ node) ถึงสำคัญต่อ least-privilege policy ที่คุณเขียนในบทที่แล้ว?
+
+## Recap
+
+เราสร้าง `iam` module ด้วย interface เดียวข้ามสาม cloud — รับ `cluster_name`, `namespace`, `service_account` เข้า, คืน binding id ออก — และ implementation สามตัวของไอเดียเดียวกัน: trust OIDC issuer ของ cluster สำหรับ service account เดียวเป๊ะ แล้วยื่น scoped cloud identity ให้มัน IRSA เขียน assume-role policy ที่มี condition `sub`; GCP ให้ `roles/iam.workloadIdentityUser` บน pool member; Azure federate user-assigned identity เข้ากับ issuer ในทุกกรณี pod ได้ cloud access จริงโดย **ไม่มี long-lived key** ให้รั่วหรือ rotate
+
+platform ตอนนี้มี network, cluster, และ identity แล้ว สิ่งที่ยังขาดคือที่เก็บ state ต่อไป [Managed Data →](/clouddeploy/th/data/) สร้าง `data` module — managed PostgreSQL บนแต่ละ cloud หลัง interface เดียว — ที่ ShopMicro จะ connect เข้าไปโดยใช้ access แบบ keyless และ scope ที่เราเพิ่งตั้งไว้เป๊ะ

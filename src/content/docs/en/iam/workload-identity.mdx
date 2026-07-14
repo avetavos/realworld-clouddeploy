@@ -1,0 +1,264 @@
+---
+title: Workload identity
+description: "The iam module — IRSA on AWS, Workload Identity on GCP, Managed Identity on Azure — so a pod gets scoped cloud access with no static keys."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+In the [previous lesson](/clouddeploy/en/iam/least-privilege/) we defined *what* an identity may do. Now we build the `iam` module: the machinery that lets a **specific Kubernetes service account** become that cloud identity **without a single long-lived credential** in the cluster.
+
+Every cloud solves this the same way conceptually — the cluster's [OIDC issuer](/clouddeploy/en/kubernetes/) signs a short-lived token for the pod, and the cloud trusts that issuer for one exact service account — but names it differently: **IRSA** (IAM Roles for Service Accounts) on AWS, **Workload Identity** on GCP, **Managed Identity with a federated credential** on Azure.
+
+The module keeps the interface from the contract, identical on all three clouds:
+
+- **in:** `cluster_name`, `namespace`, `service_account`
+- **out:** the binding id — the IRSA role ARN (AWS), the Google service account email (GCP), or the managed-identity client id (Azure)
+
+The `live/<cloud>/iam/` unit passes those three inputs and takes back one id, which the ShopMicro service account annotation will consume. The trust is scoped to exactly `namespace` + `service_account`: no other pod, in no other namespace, can assume the identity.
+
+## Why
+
+Static cloud keys in a cluster are the classic breach: a `AWS_SECRET_ACCESS_KEY` in a Secret gets exfiltrated, and it's valid until someone notices and rotates it — which is usually never. Workload identity removes the secret entirely. The pod presents a **projected, short-lived, audience-bound token** the cluster mints; the cloud validates its signature against the cluster's OIDC issuer and checks the `sub` claim equals the one service account you trusted. Nothing to leak, nothing to rotate.
+
+It's also the only way least privilege actually reaches the pod. The scoped policy from the last lesson is worthless if every pod shares one node-level identity — the narrow policy would either over-grant the node or never get used. Binding *per service account* is what lets ShopMicro's pod hold *ShopMicro's* permissions and the DNS controller hold *only* DNS.
+
+## Pros & cons
+
+**Workload identity vs a static key in a Secret**
+
+- **Pros:** no long-lived credential exists, so none can leak; tokens are minted per-pod, short-lived, and audience-scoped; the trust is pinned to one `namespace/service_account`; rotation is automatic.
+- **Cons:** more moving parts to stand up (an OIDC provider, a trust/federation relationship, an annotated service account) and the failure modes are subtler — a typo in the `sub` claim fails closed with an opaque "access denied" rather than a clear "bad key."
+
+**One shared node identity vs per-service-account identity**
+
+- **Pros of node identity:** dead simple — attach a role to the node group and every pod inherits it.
+- **Cons:** every pod on the node shares the *union* of all permissions any pod needs, which is the opposite of least privilege. Per-service-account identity is more setup but keeps each workload's blast radius its own.
+
+## Set it up
+
+Each implementation reads the cluster's OIDC issuer (an output of the cluster module), establishes trust for one service account, and attaches the policy from the previous lesson.
+
+### 1. `modules/aws/iam/main.tf` — IRSA
+
+Look up the cluster's OIDC issuer by name, register it as an IAM OIDC provider, and write an assume-role policy whose `sub` condition pins exactly one service account.
+
+```hcl
+variable "cluster_name"    { type = string }
+variable "namespace"       { type = string }
+variable "service_account" { type = string }
+
+data "aws_eks_cluster" "this" {
+  name = var.cluster_name
+}
+
+data "tls_certificate" "oidc" {
+  url = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+}
+
+resource "aws_iam_openid_connect_provider" "this" {
+  url             = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
+}
+
+data "aws_iam_policy_document" "assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.this.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.this.url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:${var.namespace}:${var.service_account}"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_iam_openid_connect_provider.this.url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "this" {
+  name               = "${var.cluster_name}-${var.namespace}-${var.service_account}"
+  assume_role_policy = data.aws_iam_policy_document.assume.json
+}
+
+# attach the scoped policy from the least-privilege lesson
+resource "aws_iam_role_policy_attachment" "external_dns" {
+  role       = aws_iam_role.this.name
+  policy_arn = aws_iam_policy.external_dns.arn
+}
+
+output "binding_id" {
+  description = "IRSA role ARN to annotate onto the Kubernetes service account"
+  value       = aws_iam_role.this.arn
+}
+```
+
+The pod's service account then carries the annotation `eks.amazonaws.com/role-arn` set to this ARN.
+
+### 2. `modules/gcp/iam/main.tf` — Workload Identity
+
+Create a Google service account, grant the Kubernetes service account permission to impersonate it via the `roles/iam.workloadIdentityUser` binding, and attach the custom role.
+
+```hcl
+variable "cluster_name"    { type = string }
+variable "namespace"       { type = string }
+variable "service_account" { type = string }
+
+data "google_project" "current" {}
+
+resource "google_service_account" "this" {
+  account_id   = "${var.service_account}-wi"
+  display_name = "Workload identity for ${var.namespace}/${var.service_account}"
+}
+
+# let the K8s SA impersonate this Google SA
+resource "google_service_account_iam_member" "wi_user" {
+  service_account_id = google_service_account.this.name
+  role               = "roles/iam.workloadIdentityUser"
+  member = "serviceAccount:${data.google_project.current.project_id}.svc.id.goog[${var.namespace}/${var.service_account}]"
+}
+
+# attach the custom role from the least-privilege lesson
+resource "google_project_iam_member" "external_dns" {
+  project = data.google_project.current.project_id
+  role    = google_project_iam_custom_role.external_dns.id
+  member  = "serviceAccount:${google_service_account.this.email}"
+}
+
+output "binding_id" {
+  description = "Google service account email to annotate onto the Kubernetes service account"
+  value       = google_service_account.this.email
+}
+```
+
+The `member` string is the workload-identity pool binding — `PROJECT.svc.id.goog[NAMESPACE/KSA]` is what pins impersonation to one Kubernetes service account. The pod's service account carries the annotation `iam.gke.io/gcp-service-account` set to this email. (Workload Identity must be enabled on the cluster — the `workload_pool` config from the [cluster module](/clouddeploy/en/kubernetes/).)
+
+### 3. `modules/azure/iam/main.tf` — Managed Identity
+
+Create a user-assigned identity, federate it to the cluster's OIDC issuer for one service account, and assign the custom role over one resource group.
+
+```hcl
+variable "cluster_name"    { type = string }
+variable "namespace"       { type = string }
+variable "service_account" { type = string }
+
+# the AKS cluster lives in the platform resource group (named after the platform)
+variable "resource_group_name" {
+  type    = string
+  default = "clouddeploy"
+}
+
+data "azurerm_resource_group" "this" {
+  name = var.resource_group_name
+}
+
+data "azurerm_kubernetes_cluster" "this" {
+  name                = var.cluster_name
+  resource_group_name = var.resource_group_name
+}
+
+resource "azurerm_user_assigned_identity" "this" {
+  name                = "${var.cluster_name}-${var.namespace}-${var.service_account}"
+  location            = data.azurerm_kubernetes_cluster.this.location
+  resource_group_name = var.resource_group_name
+}
+
+resource "azurerm_federated_identity_credential" "this" {
+  name                      = "${var.namespace}-${var.service_account}"
+  resource_group_name       = var.resource_group_name
+  parent_id                 = azurerm_user_assigned_identity.this.id
+  audience                  = ["api://AzureADTokenExchange"]
+  issuer                    = data.azurerm_kubernetes_cluster.this.oidc_issuer_url
+  subject                   = "system:serviceaccount:${var.namespace}:${var.service_account}"
+}
+
+# assign the custom role from the least-privilege lesson, scoped to the RG
+resource "azurerm_role_assignment" "external_dns" {
+  scope              = data.azurerm_resource_group.this.id
+  role_definition_id = azurerm_role_definition.external_dns.role_definition_resource_id
+  principal_id       = azurerm_user_assigned_identity.this.principal_id
+}
+
+output "binding_id" {
+  description = "Managed-identity client id to annotate onto the Kubernetes service account"
+  value       = azurerm_user_assigned_identity.this.client_id
+}
+```
+
+Azure's implementation needs one extra input, `resource_group_name`, to locate the cluster — it defaults to the platform name, so the `live/` unit still passes only the three interface inputs. The pod's service account carries the annotation `azure.workload.identity/client-id` set to this client id (and its pod template the label `azure.workload.identity/use: "true"`).
+
+### 4. `live/aws/iam/terragrunt.hcl`
+
+The unit wires the same three inputs on every cloud (only the `source` changes for `gcp`/`azure`):
+
+```hcl
+include "root" { path = find_in_parent_folders("root.hcl") }
+terraform { source = "../../../modules/aws/iam" }
+
+dependency "cluster" { config_path = "../cluster" }
+
+inputs = {
+  cluster_name    = dependency.cluster.outputs.cluster_name
+  namespace       = "platform"
+  service_account = "external-dns"
+}
+```
+
+## Verify
+
+Apply the unit, then confirm the identity works from an actual pod holding no keys.
+
+```bash
+cd live/aws/iam
+terragrunt apply
+terragrunt output binding_id
+# => "arn:aws:iam::123456789012:role/clouddeploy-platform-external-dns"
+```
+
+Annotate the service account with the id and check the trust from inside the cluster:
+
+```bash
+kubectl -n platform annotate serviceaccount external-dns \
+  eks.amazonaws.com/role-arn="$(terragrunt output -raw binding_id)"
+
+# run a throwaway pod on that service account — no AWS keys mounted
+kubectl -n platform run whoami --rm -it --restart=Never \
+  --overrides='{"spec":{"serviceAccountName":"external-dns"}}' \
+  --image=amazon/aws-cli -- sts get-caller-identity
+```
+
+```text
+{
+  "UserId": "AROA...:botocore-session-...",
+  "Account": "123456789012",
+  "Arn": "arn:aws:sts::123456789012:assumed-role/clouddeploy-platform-external-dns/botocore-session-..."
+}
+```
+
+The pod authenticated as the IRSA role with **no static credential anywhere** — that's the whole point. On GCP verify the equivalent with `gcloud auth list` (or a `curl` to the metadata server) from a pod, and on Azure with `az login --federated-token`. A denial here almost always means the `sub`/`subject` string doesn't exactly match `system:serviceaccount:<namespace>:<service_account>`.
+
+Finally, `terragrunt run --all plan` across the tree should show the `iam` unit converged on every cloud.
+
+**Check your understanding:**
+
+1. What exactly does the cloud check when the pod presents its token, and why does that make a static key unnecessary?
+2. In the IRSA assume-role policy, what does the `:sub` condition pin, and what breaks if it's slightly wrong?
+3. GCP and Azure both express "this one Kubernetes service account may become this cloud identity." Where does each encode that binding?
+4. Why does binding per service account (rather than per node) matter for the least-privilege policy you wrote in the previous lesson?
+
+## Recap
+
+We built the `iam` module with one interface across three clouds — `cluster_name`, `namespace`, `service_account` in, a binding id out — and three implementations of the same idea: trust the cluster's OIDC issuer for exactly one service account, and hand it a scoped cloud identity. IRSA writes an assume-role policy with a `sub` condition; GCP grants `roles/iam.workloadIdentityUser` on a pool member; Azure federates a user-assigned identity to the issuer. In every case a pod gets real cloud access with **no long-lived key** to leak or rotate.
+
+The platform now has network, cluster, and identity. What's still missing is somewhere to keep state. Next, [Managed Data →](/clouddeploy/en/data/) builds the `data` module — managed PostgreSQL on each cloud, behind one interface, that ShopMicro will connect to using exactly the keyless, scoped access we just set up.
