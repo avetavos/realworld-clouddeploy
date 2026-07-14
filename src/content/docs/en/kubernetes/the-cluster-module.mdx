@@ -1,0 +1,265 @@
+---
+title: The cluster module
+description: "Define one cluster interface — name, network, node_count, node_size in; cluster_name, endpoint, and CA out — backed by an EKS implementation that depends on the network module."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+The network is done. Now the cluster sits inside it — and, exactly like the network, it's **one interface with three implementations**. This lesson defines the `cluster` interface, backs it with a real EKS implementation (`modules/aws/cluster`), and — for the first time — has a `live/` unit **depend on another**: the cluster reads the network's outputs through a Terragrunt `dependency` block.
+
+The interface, as the rest of CloudDeploy expects it:
+
+| | Name | Meaning |
+|---|---|---|
+| **in** | `name` | cluster name + resource prefix |
+| **in** | `network_id` | the network to attach to (from the network module) |
+| **in** | `subnet_ids` | where nodes run (the network's private subnets) |
+| **in** | `node_count` | how many nodes in the pool |
+| **in** | `node_size` | an abstract size the module maps to a real instance type |
+| **out** | `cluster_name` | the cluster's name |
+| **out** | `cluster_endpoint` | the API server URL |
+| **out** | `cluster_ca` | the cluster CA certificate, base64 (to trust the API server) |
+
+Those three outputs are exactly what you need to build a kubeconfig or configure the `kubernetes`/`helm` providers — which is the whole of the [next lesson](/clouddeploy/en/kubernetes/eks-gke-aks/).
+
+## Why
+
+Two ideas land here. First, **`node_size` is abstract on purpose.** The interface takes `"small"`, not `"t3.medium"` — because `"t3.medium"` is meaningless on GCP and Azure. Each module maps the abstract size to its cloud's instance type, so a `live/` unit that says `node_size = "small"` is portable across all three clouds. That single mapping is what lets the cluster units stay identical.
+
+Second, **the cluster consumes the network through a dependency, not a hard-coded id.** Terragrunt's `dependency "network"` block runs the network unit's outputs and injects them as inputs here. The cluster never knows the VPC id ahead of time — it asks the network for it at plan time. That's how the network → cluster → data → iam chain wires itself the same way on every cloud.
+
+## Pros & cons
+
+**Abstract `node_size` vs. passing raw instance types through the interface**
+
+- **Pros:** one input value works on all three clouds; the cloud's instance-type vocabulary stays inside the module; changing what `"small"` means is a one-line edit per cloud, not a sweep through `live/`.
+- **Cons:** the abstraction hides real pricing and capability differences — a "small" node isn't the same machine on AWS vs. Azure. For a capstone that's fine; for cost-sensitive production you'd want the mapping documented and reviewed.
+
+**Wiring via `dependency.network.outputs` vs. hard-coding the VPC/subnet ids**
+
+- **Pros:** the cluster follows the network automatically; `terragrunt run --all` builds them in the right order; a rebuilt network propagates its new ids without editing the cluster unit.
+- **Cons:** the two units are now coupled through Terragrunt's dependency graph, and a `plan` before the network is applied needs `mock_outputs` to stand in. We add those mocks so `run --all plan` works on a clean tree.
+
+## Set it up
+
+### 1. `modules/aws/cluster/variables.tf`
+
+The interface inputs, plus the `node_size` mapping that makes the abstraction portable.
+
+```hcl
+variable "name" { type = string }
+variable "network_id" { type = string }
+variable "subnet_ids" { type = list(string) }
+variable "node_count" {
+  type    = number
+  default = 2
+}
+variable "node_size" {
+  type    = string
+  default = "small"
+}
+
+locals {
+  # Abstract size -> AWS instance type. GCP/Azure modules map the same keys.
+  instance_type = {
+    small  = "t3.medium"
+    medium = "t3.large"
+    large  = "t3.xlarge"
+  }[var.node_size]
+}
+```
+
+### 2. `modules/aws/cluster/main.tf` — EKS + a node pool
+
+EKS needs two IAM roles: one the control plane assumes, one the worker nodes assume. Then the cluster itself (attached to the network's subnets) and a managed node group sized from `node_count`/`node_size`. We use `authentication_mode = "API"`, the current EKS access model.
+
+```hcl
+# --- Control-plane role ---
+resource "aws_iam_role" "cluster" {
+  name = "${var.name}-cluster"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
+      Effect    = "Allow"
+      Principal = { Service = "eks.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "cluster" {
+  role       = aws_iam_role.cluster.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}
+
+# --- Node role ---
+resource "aws_iam_role" "node" {
+  name = "${var.name}-node"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node" {
+  for_each = toset([
+    "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+    "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+  ])
+  role       = aws_iam_role.node.name
+  policy_arn = each.value
+}
+
+# --- The cluster, attached to the network's private subnets ---
+resource "aws_eks_cluster" "this" {
+  name     = var.name
+  role_arn = aws_iam_role.cluster.arn
+  version  = "1.33"
+
+  access_config {
+    authentication_mode = "API"
+  }
+
+  vpc_config {
+    subnet_ids              = var.subnet_ids
+    endpoint_private_access = true
+    endpoint_public_access  = true
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.cluster]
+}
+
+# --- The node pool ---
+resource "aws_eks_node_group" "this" {
+  cluster_name    = aws_eks_cluster.this.name
+  node_group_name = "${var.name}-default"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = var.subnet_ids
+  instance_types  = [local.instance_type]
+
+  scaling_config {
+    desired_size = var.node_count
+    min_size     = var.node_count
+    max_size     = var.node_count
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.node]
+}
+```
+
+Note what the module does *with the interface inputs*: `var.subnet_ids` (the network's private subnets) go straight into `vpc_config` and the node group, and `var.node_size` becomes `local.instance_type`. The consumer never wrote `t3.medium`.
+
+### 3. `modules/aws/cluster/outputs.tf`
+
+The three interface outputs. `cluster_ca` is the base64 CA data straight off the cluster.
+
+```hcl
+output "cluster_name" {
+  value = aws_eks_cluster.this.name
+}
+
+output "cluster_endpoint" {
+  value = aws_eks_cluster.this.endpoint
+}
+
+output "cluster_ca" {
+  value = aws_eks_cluster.this.certificate_authority[0].data
+}
+```
+
+### 4. `live/aws/cluster/terragrunt.hcl` — depending on the network
+
+Here's the first cross-unit dependency. The `dependency "network"` block runs the network unit's outputs; we reference them in `inputs`. The `mock_outputs` let `terragrunt run --all plan` succeed before the network is applied.
+
+```hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+terraform {
+  source = "../../../modules/aws/cluster"
+}
+
+dependency "network" {
+  config_path = "../network"
+
+  mock_outputs = {
+    network_id         = "vpc-mock"
+    private_subnet_ids = ["subnet-mock-a", "subnet-mock-b"]
+  }
+  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+}
+
+inputs = {
+  name       = "clouddeploy"
+  network_id = dependency.network.outputs.network_id
+  subnet_ids = dependency.network.outputs.private_subnet_ids
+  node_count = 2
+  node_size  = "small"
+}
+```
+
+Read the `inputs` block against the interface table above — every line maps to one input, and the two ids come from the network rather than being hard-coded. Next lesson, the GCP and Azure cluster units use this *exact same* `inputs` block; only the `source` path changes.
+
+## Verify
+
+Because the cluster depends on the network, apply the network first (or let `run --all` order it). From `live/aws`:
+
+```bash
+terragrunt run --all plan
+```
+
+Terragrunt resolves the graph, uses the mock network outputs where needed, and shows the cluster plan: two IAM roles with their attachments, the EKS cluster, and the node group — roughly:
+
+```
+Plan: 8 to add, 0 to change, 0 to destroy.
+```
+
+Apply the network, then the cluster, then confirm the interface outputs are real:
+
+```bash
+cd live/aws/network && terragrunt apply
+cd ../cluster && terragrunt apply
+terragrunt output
+```
+
+```
+cluster_name     = "clouddeploy"
+cluster_endpoint = "https://XXXX.gr7.us-east-1.eks.amazonaws.com"
+cluster_ca       = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0t..."
+```
+
+An endpoint URL and a base64 CA blob — everything a kubeconfig needs. Prove it end to end by pointing `kubectl` at the freshly built cluster:
+
+```bash
+aws eks update-kubeconfig --name clouddeploy --region us-east-1
+kubectl get nodes
+```
+
+```
+NAME                          STATUS   ROLES    AGE   VERSION
+ip-10-0-32-11.ec2.internal    Ready    <none>   3m    v1.33.x
+ip-10-0-48-24.ec2.internal    Ready    <none>   3m    v1.33.x
+```
+
+Two `Ready` nodes on the network's private subnets — the cluster interface, satisfied and reachable.
+
+**Check your understanding:**
+
+1. The `live/aws/cluster` unit never mentions `t3.medium`, yet nodes come up as that type. Trace how `node_size = "small"` becomes an instance type, and say why that indirection is what makes the unit portable.
+2. What does `dependency "network"` actually do at plan time, and why are `mock_outputs` needed for `run --all plan` on a clean tree?
+3. EKS requires two IAM roles. What's the distinction between the cluster role and the node role, and what breaks if you attach the CNI policy to the wrong one?
+4. `cluster_ca` is emitted as base64. Why base64, and which two other outputs must accompany it to build a working kubeconfig?
+
+## Recap
+
+We defined the `cluster` interface — `name`, `network_id`, `subnet_ids`, `node_count`, `node_size` in; `cluster_name`, `cluster_endpoint`, `cluster_ca` out — and implemented it as EKS: two IAM roles, a cluster on the network's private subnets, and a managed node group sized from an abstract `node_size`. Crucially, the `live/aws/cluster` unit reads the network's ids through a Terragrunt `dependency` block instead of hard-coding them, so [Terragrunt](/clouddeploy/en/terragrunt/) builds network-then-cluster in order on every cloud.
+
+One interface, one implementation so far. Next we implement the same three outputs on GKE and AKS, then turn `cluster_endpoint` and `cluster_ca` into a kubeconfig and live `kubernetes`/`helm` providers: [EKS, GKE, AKS →](/clouddeploy/en/kubernetes/eks-gke-aks/).
