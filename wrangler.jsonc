@@ -1,0 +1,17 @@
+{
+  // Cloudflare Worker (static assets) for the CloudDeploy guide.
+  // The site is built with Astro `base: '/clouddeploy'`, so the built files must
+  // be served under a `/clouddeploy/` path. `npm run deploy` stages `dist/` into
+  // `.cf-assets/clouddeploy/` and serves `.cf-assets` as the asset root.
+  "name": "realworld-clouddeploy",
+  "compatibility_date": "2024-09-23",
+  "assets": {
+    "directory": "./.cf-assets"
+  },
+  // projects.avetavos.com is the shared host (taskflow owns it as a custom
+  // domain). CloudDeploy is served under /clouddeploy/* (Astro base) via a
+  // more-specific Workers route, the same way the other guides are.
+  "routes": [
+    { "pattern": "projects.avetavos.com/clouddeploy/*", "zone_name": "avetavos.com" }
+  ]
+}
