@@ -1,0 +1,162 @@
+---
+title: Deploy GrowthBook
+description: "เพิ่ม GrowthBook เข้า platform layer เป็น Helm release — frontend, API backend และ MongoDB — เพื่อให้มี control plane ของ feature flag บนทุก cluster"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+ShopMicro [รันอยู่](/clouddeploy/th/deploy-shopmicro/) และ [authenticate แล้ว](/clouddeploy/th/keycloak/oidc-at-the-gateway/) ชิ้นสุดท้ายของ platform layer คือการควบคุม *behaviour* ตอน runtime — เปิดปิด feature โดยไม่ต้อง ship container ใหม่ นั่นคือ feature-flag service
+
+บทนี้ deploy **GrowthBook** ลงใน platform layer ที่ cloud-neutral เป็น Helm release: React frontend (admin UI), API backend (ที่ serve นิยาม flag ให้ SDK) และ MongoDB สำหรับเก็บข้อมูล พอมันขึ้นแล้ว คุณสร้าง SDK connection key ใน UI — นั่นคือ key ที่ [บทถัดไป](/clouddeploy/th/growthbook/flagging-a-feature/) ใช้ gate feature จริงของ ShopMicro
+
+## Why
+
+feature flag คือ configuration ไม่ใช่ code — ซึ่งทำให้มันเป็นสิ่งที่คุณไม่อยากต้อง redeploy เพื่อเปลี่ยน flag service ที่ self-host และรันบนทุก cluster เก็บ control plane นั้นให้ cloud-neutral และอยู่ในเครือข่ายของคุณเอง: payload ของ flag ไม่เคยออกนอก cluster และ SDK ที่อยู่ใน ShopMicro ดึงมันผ่าน DNS ภายใน cluster
+
+GrowthBook เผยแพร่ Helm chart อย่างเป็นทางการ มันจึงเสียบเข้า pattern `modules/platform/` เดียวกับ Datadog และ Keycloak ได้เลย chart เดียว, config เดียว, สาม cloud — โดย API endpoint เข้าถึงได้จาก ShopMicro pod ผ่าน address ของ Service ภายใน cluster ธรรมดา
+
+## Pros & cons
+
+**Self-hosted GrowthBook vs. a hosted flag SaaS (LaunchDarkly / GrowthBook Cloud)**
+
+- **Pros:** รันบนทุก cluster พร้อมกับส่วนอื่นของ platform; ข้อมูล flag อยู่ใน cluster; ไม่มีบิล SaaS ต่อที่นั่ง; SDK คุยกับ address ของ Service ไม่มี egress ออกไปหา third party
+- **Cons:** คุณ operate มันเอง — MongoDB, API, backup, upgrade เป็นของคุณ SaaS ยกภาระ operate นั้นออกและเพิ่ม global edge สำหรับส่ง flag แลกกับ cloud-neutrality และ data locality
+
+**Official Helm chart vs. a hand-rolled Deployment + Service + MongoDB**
+
+- **Pros (chart):** frontend, backend และ MongoDB ต่อสายเข้าด้วยกันด้วย default ที่สมเหตุสมผล; การ upgrade เป็นแค่การขยับ version; ไฟล์ values เล็กและ review ได้
+- **Cons (chart):** คุณรับ structure ของ chart และ MongoDB ที่มันแถมมา ซึ่งโอเคสำหรับ platform ที่ใช้สอน แต่คุณคงชี้ไป managed document DB ก่อนจะเรียกว่า production การทำเองให้ควบคุมได้เต็มที่ แต่ก็ต้องแก้ปัญหาที่ chart แก้ให้แล้วซ้ำอีกรอบ
+
+## Set it up
+
+### 1. `modules/platform/growthbook.tf`
+
+The Helm release, pulled from GrowthBook's OCI registry. `APP_ORIGIN` and `API_HOST` are the public URLs the browser uses; `JWT_SECRET` and `ENCRYPTION_KEY` are the two secrets a self-hosted install must set. The bundled MongoDB is enabled with persistence.
+
+```hcl
+resource "kubernetes_secret" "growthbook" {
+  metadata {
+    name      = "growthbook-secrets"
+    namespace = var.platform_namespace
+  }
+  data = {
+    "jwt-secret"     = var.growthbook_jwt_secret
+    "encryption-key" = var.growthbook_encryption_key
+  }
+}
+
+resource "helm_release" "growthbook" {
+  name       = "growthbook"
+  namespace  = var.platform_namespace
+  repository = "oci://ghcr.io/growthbook/charts"
+  chart      = "growthbook"
+  version    = var.growthbook_chart_version
+
+  values = [yamlencode({
+    global = {
+      env = [
+        { name = "APP_ORIGIN", value = "https://${var.growthbook_app_host}" },
+      ]
+    }
+    frontend = {
+      env = [
+        { name = "API_HOST", value = "https://${var.growthbook_api_host}" },
+      ]
+    }
+    backend = {
+      mongodbEnabled = true
+      volumeClaim    = { enabled = true }
+      env = [
+        {
+          name = "JWT_SECRET"
+          valueFrom = { secretKeyRef = { name = kubernetes_secret.growthbook.metadata[0].name, key = "jwt-secret" } }
+        },
+        {
+          name = "ENCRYPTION_KEY"
+          valueFrom = { secretKeyRef = { name = kubernetes_secret.growthbook.metadata[0].name, key = "encryption-key" } }
+        },
+        { name = "NODE_ENV", value = "production" },
+      ]
+    }
+    mongodb = {
+      enabled     = true
+      persistence = { enabled = true }
+    }
+    ingress = {
+      enabled          = true
+      className        = var.ingress_class
+      hosts = [
+        { host = var.growthbook_app_host, paths = [{ path = "/", pathType = "Prefix", service = "frontend" }] },
+        { host = var.growthbook_api_host, paths = [{ path = "/", pathType = "Prefix", service = "backend" }] },
+      ]
+    }
+  })]
+}
+```
+
+`NODE_ENV = "production"` สำคัญ: คำแนะนำด้านความปลอดภัยของ GrowthBook เองบอกให้ set มันใน production เพื่อปิด feature สำหรับ debugging — ควบคู่กับ secret สองตัว ซึ่งต้องเป็น random string ยาว ๆ ที่คุณไม่มีวันปล่อยไว้ที่ค่า default
+
+### 2. `modules/platform/outputs.tf`
+
+Expose the *in-cluster* API address. This is what ShopMicro's SDK will call — a Service DNS name, so flag traffic never leaves the cluster. The public `API_HOST` above is only for the browser UI.
+
+```hcl
+output "growthbook_api_internal_url" {
+  value = "http://growthbook-backend.${var.platform_namespace}.svc.cluster.local:3100"
+}
+```
+
+### 3. `live/aws/platform/terragrunt.hcl`
+
+Add the GrowthBook inputs to the platform unit:
+
+```hcl
+inputs = {
+  # ...existing keycloak + oauth2-proxy inputs...
+  growthbook_app_host       = "flags.aws.clouddeploy.example.com"
+  growthbook_api_host       = "flags-api.aws.clouddeploy.example.com"
+  growthbook_jwt_secret     = get_env("GROWTHBOOK_JWT_SECRET")
+  growthbook_encryption_key = get_env("GROWTHBOOK_ENCRYPTION_KEY")
+  growthbook_chart_version  = "1.0.0"
+}
+```
+
+## Verify
+
+Plan and apply the platform unit, then confirm the three workloads come up:
+
+```bash
+cd live/aws/platform
+terragrunt apply
+
+kubectl -n platform get pods -l app.kubernetes.io/instance=growthbook
+# NAME                     READY   STATUS    RESTARTS   AGE
+# growthbook-frontend-...  1/1     Running   0          2m
+# growthbook-backend-...   1/1     Running   0          2m
+# growthbook-mongodb-0     1/1     Running   0          2m
+```
+
+Check the API is serving from inside the cluster (this is the endpoint the SDK uses):
+
+```bash
+kubectl -n platform run curl --rm -it --image=curlimages/curl --restart=Never -- \
+  curl -s http://growthbook-backend.platform.svc.cluster.local:3100/healthcheck
+# {"status":"ok"}
+```
+
+จากนั้นเปิด `https://flags.aws.clouddeploy.example.com` ใน browser, สร้าง admin account ตัวแรก แล้ว — นี่คือ value ที่คุณจะพกไปบทถัดไป — ไปที่ **SDK Connections**, เพิ่ม connection แล้ว copy client key ของมัน (มันขึ้นต้นด้วย `sdk-`) เก็บ SDK endpoint ของ connection ให้ชี้ไปที่ internal API URL จาก output ด้านบน
+
+**ตรวจสอบความเข้าใจ:**
+
+1. GrowthBook expose สอง host คือ `APP_ORIGIN`/frontend และ `API_HOST`/backend SDK ของ ShopMicro คุยกับตัวไหน และทำไม address ของ Service ภายใน cluster ถึงถูกเลือกมากกว่า public ingress host สำหรับ traffic นั้น?
+2. `JWT_SECRET` กับ `ENCRYPTION_KEY` protect อะไร และความเสี่ยงของการ ship ค่า default คืออะไร?
+3. ทำไม feature-flag service ถึงควรอยู่ใน platform layer ที่ cloud-neutral แทนที่จะอยู่ใน module ที่แยกต่อ cloud?
+4. chart แถม MongoDB มา คุณจะเปลี่ยนอะไรก่อนจะถือว่ามันเป็น production และ structure ของ chart ทำให้การ swap นั้นง่ายตรงไหน?
+
+## Recap
+
+คุณ deploy GrowthBook — frontend, API backend และ MongoDB — ลงใน platform layer เป็น Helm release ตัวเดียว, set secret สองตัวที่ต้องมีและ `NODE_ENV=production` แล้ว expose internal API URL เป็น output จากนั้นคุณสร้าง SDK connection key ใน UI ตอนนี้มี control plane ของ feature flag บนทุก cluster ที่ ShopMicro เข้าถึงได้ผ่าน DNS ภายใน cluster
+
+ต่อไปเอามันมาใช้งาน: [Flagging a Feature →](/clouddeploy/th/growthbook/flagging-a-feature/) ต่อ GrowthBook Go SDK เข้ากับ service ของ ShopMicro แล้ว gate feature จริงไว้หลัง flag ที่คุณ toggle ใน UI — โดยไม่ต้อง redeploy

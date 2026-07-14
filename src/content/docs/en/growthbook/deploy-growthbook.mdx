@@ -1,0 +1,162 @@
+---
+title: Deploy GrowthBook
+description: "Add GrowthBook to the platform layer as a Helm release — its frontend, API backend, and MongoDB — so you have a feature-flag control plane on every cluster."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+ShopMicro is [running](/clouddeploy/en/deploy-shopmicro/) and [authenticated](/clouddeploy/en/keycloak/oidc-at-the-gateway/). The last piece of the platform layer is runtime control over *behaviour* — turning features on and off without shipping new containers. That's a feature-flag service.
+
+This lesson deploys **GrowthBook** into the cloud-neutral platform layer as a Helm release: its React frontend (the admin UI), its API backend (which serves flag definitions to SDKs), and a MongoDB for storage. Once it's up, you create an SDK connection key in the UI — that's the key [the next lesson](/clouddeploy/en/growthbook/flagging-a-feature/) uses to gate a real ShopMicro feature.
+
+## Why
+
+Feature flags are configuration, not code — which makes them exactly the kind of thing you don't want to redeploy to change. A self-hosted flag service that runs on every cluster keeps that control plane cloud-neutral and inside your own network: flag payloads never leave the cluster, and the SDK inside ShopMicro fetches them over in-cluster DNS.
+
+GrowthBook publishes an official Helm chart, so it slots into the same `modules/platform/` pattern as Datadog and Keycloak. One chart, one config, three clouds — with the API endpoint reachable from ShopMicro pods via a plain in-cluster Service address.
+
+## Pros & cons
+
+**Self-hosted GrowthBook vs. a hosted flag SaaS (LaunchDarkly / GrowthBook Cloud)**
+
+- **Pros:** Runs on every cluster with the rest of the platform; flag data stays in-cluster; no per-seat SaaS bill; SDKs talk to a Service address, no egress to a third party.
+- **Cons:** You operate it — MongoDB, the API, backups, upgrades are yours. A SaaS removes that operational load and adds a global edge for flag delivery, at the cost of cloud-neutrality and data locality.
+
+**Official Helm chart vs. a hand-rolled Deployment + Service + MongoDB**
+
+- **Pros (chart):** Frontend, backend, and MongoDB wired together with sane defaults; upgrades are a version bump; the values file is small and reviewable.
+- **Cons (chart):** You inherit the chart's structure and its bundled MongoDB, which is fine for a teachable platform but you'd point at a managed document DB before calling it production. Hand-rolling gives full control but re-solves what the chart already solved.
+
+## Set it up
+
+### 1. `modules/platform/growthbook.tf`
+
+The Helm release, pulled from GrowthBook's OCI registry. `APP_ORIGIN` and `API_HOST` are the public URLs the browser uses; `JWT_SECRET` and `ENCRYPTION_KEY` are the two secrets a self-hosted install must set. The bundled MongoDB is enabled with persistence.
+
+```hcl
+resource "kubernetes_secret" "growthbook" {
+  metadata {
+    name      = "growthbook-secrets"
+    namespace = var.platform_namespace
+  }
+  data = {
+    "jwt-secret"     = var.growthbook_jwt_secret
+    "encryption-key" = var.growthbook_encryption_key
+  }
+}
+
+resource "helm_release" "growthbook" {
+  name       = "growthbook"
+  namespace  = var.platform_namespace
+  repository = "oci://ghcr.io/growthbook/charts"
+  chart      = "growthbook"
+  version    = var.growthbook_chart_version
+
+  values = [yamlencode({
+    global = {
+      env = [
+        { name = "APP_ORIGIN", value = "https://${var.growthbook_app_host}" },
+      ]
+    }
+    frontend = {
+      env = [
+        { name = "API_HOST", value = "https://${var.growthbook_api_host}" },
+      ]
+    }
+    backend = {
+      mongodbEnabled = true
+      volumeClaim    = { enabled = true }
+      env = [
+        {
+          name = "JWT_SECRET"
+          valueFrom = { secretKeyRef = { name = kubernetes_secret.growthbook.metadata[0].name, key = "jwt-secret" } }
+        },
+        {
+          name = "ENCRYPTION_KEY"
+          valueFrom = { secretKeyRef = { name = kubernetes_secret.growthbook.metadata[0].name, key = "encryption-key" } }
+        },
+        { name = "NODE_ENV", value = "production" },
+      ]
+    }
+    mongodb = {
+      enabled     = true
+      persistence = { enabled = true }
+    }
+    ingress = {
+      enabled          = true
+      className        = var.ingress_class
+      hosts = [
+        { host = var.growthbook_app_host, paths = [{ path = "/", pathType = "Prefix", service = "frontend" }] },
+        { host = var.growthbook_api_host, paths = [{ path = "/", pathType = "Prefix", service = "backend" }] },
+      ]
+    }
+  })]
+}
+```
+
+`NODE_ENV = "production"` matters: GrowthBook's own security guidance is to set it in production so debugging features are disabled — alongside the two secrets, which must be long random strings you never leave at their defaults.
+
+### 2. `modules/platform/outputs.tf`
+
+Expose the *in-cluster* API address. This is what ShopMicro's SDK will call — a Service DNS name, so flag traffic never leaves the cluster. The public `API_HOST` above is only for the browser UI.
+
+```hcl
+output "growthbook_api_internal_url" {
+  value = "http://growthbook-backend.${var.platform_namespace}.svc.cluster.local:3100"
+}
+```
+
+### 3. `live/aws/platform/terragrunt.hcl`
+
+Add the GrowthBook inputs to the platform unit:
+
+```hcl
+inputs = {
+  # ...existing keycloak + oauth2-proxy inputs...
+  growthbook_app_host       = "flags.aws.clouddeploy.example.com"
+  growthbook_api_host       = "flags-api.aws.clouddeploy.example.com"
+  growthbook_jwt_secret     = get_env("GROWTHBOOK_JWT_SECRET")
+  growthbook_encryption_key = get_env("GROWTHBOOK_ENCRYPTION_KEY")
+  growthbook_chart_version  = "1.0.0"
+}
+```
+
+## Verify
+
+Plan and apply the platform unit, then confirm the three workloads come up:
+
+```bash
+cd live/aws/platform
+terragrunt apply
+
+kubectl -n platform get pods -l app.kubernetes.io/instance=growthbook
+# NAME                     READY   STATUS    RESTARTS   AGE
+# growthbook-frontend-...  1/1     Running   0          2m
+# growthbook-backend-...   1/1     Running   0          2m
+# growthbook-mongodb-0     1/1     Running   0          2m
+```
+
+Check the API is serving from inside the cluster (this is the endpoint the SDK uses):
+
+```bash
+kubectl -n platform run curl --rm -it --image=curlimages/curl --restart=Never -- \
+  curl -s http://growthbook-backend.platform.svc.cluster.local:3100/healthcheck
+# {"status":"ok"}
+```
+
+Then open `https://flags.aws.clouddeploy.example.com` in a browser, create the initial admin account, and — this is the value you carry to the next lesson — go to **SDK Connections**, add a connection, and copy its client key (it starts with `sdk-`). Keep the connection's SDK endpoint pointed at the internal API URL from the output above.
+
+**Check your understanding:**
+
+1. GrowthBook exposes two hosts, `APP_ORIGIN`/frontend and `API_HOST`/backend. Which one does ShopMicro's SDK talk to, and why is the in-cluster Service address preferred over the public ingress host for that traffic?
+2. What do `JWT_SECRET` and `ENCRYPTION_KEY` protect, and what's the risk of shipping their defaults?
+3. Why does a feature-flag service belong in the cloud-neutral platform layer rather than in a per-cloud module?
+4. The chart bundles MongoDB. What would you change before treating this as production, and what does the chart's structure make easy about that swap?
+
+## Recap
+
+You deployed GrowthBook — frontend, API backend, and MongoDB — into the platform layer as a single Helm release, set the two required secrets and `NODE_ENV=production`, and exposed the in-cluster API URL as an output. You then created an SDK connection key in the UI. There's now a feature-flag control plane on every cluster, reachable by ShopMicro over in-cluster DNS.
+
+Next, put it to work: [Flagging a Feature →](/clouddeploy/en/growthbook/flagging-a-feature/) wires the GrowthBook Go SDK into a ShopMicro service and gates a real feature behind a flag you toggle in the UI — with no redeploy.

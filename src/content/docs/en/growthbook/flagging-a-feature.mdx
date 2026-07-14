@@ -1,0 +1,156 @@
+---
+title: Flagging a Feature
+description: "Wire the GrowthBook Go SDK into a ShopMicro service and gate a real feature behind a flag you toggle in the UI — with no redeploy."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+[GrowthBook is running](/clouddeploy/en/growthbook/deploy-growthbook/) and you have an SDK connection key. Now we make it do something: gate a real ShopMicro feature behind a flag and prove you can flip it from the UI without touching the deployment.
+
+We wire the **GrowthBook Go SDK** into a ShopMicro service (the products service, which powers the storefront), define a boolean flag `shopmicro-recommendations`, and wrap a "recommended products" panel in an `EvalFeature` check. The SDK streams flag changes over SSE, so toggling the flag in GrowthBook flips the behaviour on live pods in seconds — no build, no rollout.
+
+## Why
+
+The whole point of a flag is the decouple: the decision of *whether* a feature is on moves out of the deploy pipeline and into a runtime control plane. That's what lets you dark-launch code, ramp a feature to 10% of users, or kill a misbehaving feature in seconds instead of waiting for a rollback.
+
+Using GrowthBook's **streaming (SSE) data source** rather than polling means the pod holds an open connection to the in-cluster API and gets pushed changes as they happen. Combined with the [in-cluster API URL](/clouddeploy/en/growthbook/deploy-growthbook/) from the last lesson, flag evaluation is a local, fast, in-process check — no per-request network hop to a flag service.
+
+## Pros & cons
+
+**SDK-evaluated flags (in-process) vs. an API call per decision**
+
+- **Pros:** Evaluation is an in-memory lookup, so it's effectively free per request; the SDK caches the full ruleset and updates it over SSE; the service keeps working off the last-known ruleset even if GrowthBook blips.
+- **Cons:** Each pod holds its own copy of the rules and its own SSE connection; there's a small propagation window between a UI toggle and every pod seeing it. A per-decision API call is simpler to reason about but adds latency and a hard dependency on the flag service being up.
+
+**Flag at the service vs. flag at the gateway/frontend**
+
+- **Pros (service):** The service owns the feature and the flag together, so the gate sits right next to the code it controls and can use real user attributes (id, plan, region) for targeting.
+- **Cons (service):** Every service that gates a feature needs the SDK wired in. Flagging at the frontend is fewer integration points but can only gate what the frontend can see, and ships flag logic to the browser.
+
+## Set it up
+
+### 1. `go.mod`
+
+Add the Go SDK to the ShopMicro products service:
+
+```bash
+go get github.com/growthbook/growthbook-golang
+```
+
+### 2. `internal/flags/flags.go`
+
+A small wrapper that owns the GrowthBook client. It reads the API host and client key from the environment (injected by the deployment), starts an SSE data source, and blocks once at startup until the first ruleset loads.
+
+```go
+package flags
+
+import (
+	"context"
+	"os"
+
+	gb "github.com/growthbook/growthbook-golang"
+)
+
+func New(ctx context.Context) (*gb.Client, error) {
+	client, err := gb.NewClient(
+		ctx,
+		gb.WithApiHost(os.Getenv("GROWTHBOOK_API_HOST")),
+		gb.WithClientKey(os.Getenv("GROWTHBOOK_CLIENT_KEY")),
+		gb.WithSseDataSource(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Wait until the first ruleset is loaded so early requests don't
+	// evaluate against an empty feature set.
+	if err := client.EnsureLoaded(ctx); err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+```
+
+### 3. `internal/products/handler.go`
+
+Gate the feature. We build a per-request child client carrying the user's attributes (so targeting rules can key off `id`, `plan`, etc.), then evaluate the flag. `EvalFeature(...).On` is the boolean check.
+
+```go
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	products := h.repo.All(r.Context())
+
+	// Attributes let GrowthBook target by user later (e.g. 10% rollout).
+	child, _ := h.gb.WithAttributes(gb.Attributes{
+		"id":   userIDFrom(r),
+		"plan": planFrom(r),
+	})
+
+	resp := listResponse{Products: products}
+	if child.EvalFeature(r.Context(), "shopmicro-recommendations").On {
+		resp.Recommendations = h.repo.Recommended(r.Context())
+	}
+
+	writeJSON(w, resp)
+}
+```
+
+When the flag is off, `Recommendations` stays empty and the panel doesn't render. When it's on, the storefront shows recommended products. No other code path changes.
+
+### 4. `charts/shopmicro/values.yaml`
+
+Inject the SDK connection into the products service. `GROWTHBOOK_API_HOST` is the **in-cluster** API URL exported by the platform module; the client key is the `sdk-` value you created in the GrowthBook UI, delivered as a secret.
+
+```yaml
+products:
+  env:
+    - name: GROWTHBOOK_API_HOST
+      value: "http://growthbook-backend.platform.svc.cluster.local:3100"
+    - name: GROWTHBOOK_CLIENT_KEY
+      valueFrom:
+        secretKeyRef:
+          name: growthbook-sdk
+          key: client-key
+```
+
+The `live/<cloud>/shopmicro/terragrunt.hcl` unit passes these through per cloud — the API host is a Service address, so it's identical on every cluster.
+
+## Verify
+
+Deploy the updated service, then drive the flag from the UI and watch behaviour change with no redeploy.
+
+First, with the flag **off** in GrowthBook, the recommendations are absent:
+
+```bash
+curl -s https://shop.aws.clouddeploy.example.com/api/products | jq '.recommendations | length'
+# 0
+```
+
+Now open GrowthBook, create the feature `shopmicro-recommendations` (type: boolean), and toggle it **on** for the production environment. Give the SSE stream a moment, then hit the same endpoint again — **without redeploying anything**:
+
+```bash
+curl -s https://shop.aws.clouddeploy.example.com/api/products | jq '.recommendations | length'
+# 6
+```
+
+The panel appeared because the running pod's SDK received the change over SSE and `EvalFeature(...).On` flipped to `true`. Toggle it back off in the UI and the count returns to `0`. That live flip, with the container untouched, is the whole payoff.
+
+Confirm the pod picked up the ruleset (not an error) in its logs:
+
+```bash
+kubectl -n shopmicro logs deploy/shopmicro-products | grep -i growthbook
+# growthbook: features loaded (sse), 1 feature
+```
+
+**Check your understanding:**
+
+1. Why does `flags.New` call `EnsureLoaded` at startup? What could a request see if it evaluated a flag before that returned?
+2. With the SSE data source, what actually happens on the running pod when you toggle the flag in the UI — and why is there no redeploy?
+3. What are the `Attributes` on the child client for, given the flag is currently a simple on/off? What do they enable later?
+4. The SDK reads `GROWTHBOOK_API_HOST` as an in-cluster Service address rather than the public ingress host. What are two reasons that's the better choice?
+
+## Recap
+
+You wired the GrowthBook Go SDK into ShopMicro's products service, gated the recommendations panel behind the `shopmicro-recommendations` flag, and injected the in-cluster API host plus SDK key through Helm. Then you flipped the feature on and off from the GrowthBook UI and watched a live pod change behaviour with no redeploy — the decouple of "is it on" from "is it deployed" made concrete.
+
+That completes the platform layer: observability, identity, and feature flags all run cloud-neutral on every cluster. The remaining question is how all of this — the Terragrunt units and the Helm deploys — gets applied safely and automatically. Next: [CI/CD →](/clouddeploy/en/cicd/).
