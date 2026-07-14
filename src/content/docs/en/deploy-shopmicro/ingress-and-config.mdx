@@ -1,0 +1,205 @@
+---
+title: Ingress and per-cloud config
+description: "Expose ShopMicro through each cloud's ingress — AWS ALB, GKE GCE ingress, Azure ingress — wire DNS, layer per-cloud values and secrets, and prove the app answers over HTTP."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The [previous lesson](/clouddeploy/en/deploy-shopmicro/helm-release/) got ShopMicro's pods `Running` on all three clusters — but nothing outside the cluster can reach them. This lesson opens the door: an **ingress** in front of ShopMicro's gateway on each cloud, **DNS** pointing at it, and the small set of **per-cloud values and secrets** the chart needs to be reachable.
+
+The catch is that "ingress" is where the clouds diverge most. A Kubernetes `Ingress` object is portable, but the controller that fulfills it — and the load balancer it provisions — is cloud-specific:
+
+- **AWS:** the AWS Load Balancer Controller turns an `Ingress` into an **ALB** (`ingressClassName: alb`, `alb.ingress.kubernetes.io/*` annotations).
+- **GCP:** GKE's built-in ingress turns an `Ingress` into a **GCE external HTTP(S) load balancer** (`ingressClassName: gce`).
+- **Azure:** the **Application Gateway Ingress Controller** (AGIC) turns an `Ingress` into an Application Gateway (`ingressClassName: azure-application-gateway`).
+
+We drive all of it through the same `helm_release` — per-cloud values files layered on top of the chart's defaults — so the diverging bits stay confined to `charts/shopmicro/values-<cloud>.yaml`.
+
+## Why
+
+**Why let each cloud's native controller own the ingress instead of installing ingress-nginx everywhere?** You *could* run ingress-nginx on all three and get one identical ingress class — and that's a legitimate choice. But the native controllers integrate with each cloud's certificate management, WAF, and health checking, and they're what a team on that cloud will actually operate. CloudDeploy's honest position is to use each cloud's front door and *name* the differences, rather than paper over them with a lowest-common-denominator proxy. The `Ingress` spec stays the same shape; only the class and annotations change.
+
+**Why per-cloud values files rather than a pile of `set` blocks?** Ingress annotations are verbose and cloud-specific. Threading a dozen `alb.ingress.kubernetes.io/*` keys through Terraform `set` lists is noisy and hard to review. A `values-aws.yaml` file layered via the release's `values` argument keeps the cloud-specific config as readable YAML, versioned next to the chart, and diffable.
+
+**Why manage the app's secrets as a Kubernetes `Secret` in Terraform?** ShopMicro needs more than a DB URL — a JWT signing key, maybe a session secret. Those shouldn't be baked into values. Creating them as a `kubernetes_secret` (from a sensitive variable) and referencing them by name in the chart keeps secrets out of the rendered manifest and out of plan output.
+
+## Pros & cons
+
+**Native per-cloud ingress (ALB / GCE / AGIC) vs a single portable ingress-nginx on all three**
+
+- **Pros:** integrates with each cloud's certs, WAF, and health checks; it's what that cloud's operators expect; no extra component to run.
+- **Cons:** three ingress classes and three annotation vocabularies to learn; the `Ingress` is only *mostly* portable.
+
+**Per-cloud `values-<cloud>.yaml` files vs one `values.yaml` with conditionals**
+
+- **Pros:** cloud-specific config is isolated, readable, and reviewable; the base chart stays clean.
+- **Cons:** three files to keep in sync; a shared change has to be made in each.
+
+## Set it up
+
+### 1. `charts/shopmicro/values-aws.yaml` (ALB ingress)
+
+Layer AWS-specific ingress config on top of the chart defaults. This assumes the AWS Load Balancer Controller is installed on the cluster (part of the platform layer) and that the gateway service is the ingress target.
+
+```yaml
+# charts/shopmicro/values-aws.yaml
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:123456789012:certificate/REPLACE
+  hosts:
+    - host: shop.aws.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+```
+
+### 2. `charts/shopmicro/values-gcp.yaml` (GCE ingress)
+
+GKE's ingress controller reads `ingressClassName: gce` and provisions an external HTTP(S) load balancer. A `ManagedCertificate` (referenced by annotation) handles TLS.
+
+```yaml
+# charts/shopmicro/values-gcp.yaml
+ingress:
+  enabled: true
+  className: gce
+  annotations:
+    kubernetes.io/ingress.global-static-ip-name: shopmicro-ip
+    networking.gke.io/managed-certificates: shopmicro-cert
+  hosts:
+    - host: shop.gcp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+```
+
+### 3. `charts/shopmicro/values-azure.yaml` (AGIC ingress)
+
+The Application Gateway Ingress Controller fulfills the `Ingress` on an Application Gateway. TLS is typically terminated with a certificate referenced from Key Vault via annotation.
+
+```yaml
+# charts/shopmicro/values-azure.yaml
+ingress:
+  enabled: true
+  className: azure-application-gateway
+  annotations:
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: shop.azure.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+```
+
+### 4. Load the values file and the app secret in each unit
+
+Back in `live/<cloud>/shopmicro/terragrunt.hcl`, point the release at the right values file and add the app secret. First, teach the module to accept them:
+
+```hcl
+# modules/shopmicro/variables.tf  (additions)
+variable "values_file" { type = string }                 # absolute path to values-<cloud>.yaml
+variable "jwt_secret"  { type = string, sensitive = true }
+```
+
+```hcl
+# modules/shopmicro/main.tf  (additions)
+resource "kubernetes_secret" "app" {
+  metadata {
+    name      = "shopmicro-app"
+    namespace = var.namespace
+  }
+  data = {
+    "jwt-secret" = var.jwt_secret
+  }
+}
+
+resource "helm_release" "shopmicro" {
+  # ...name / chart / version as before...
+  values = [file(var.values_file)]
+
+  set = [
+    { name = "image.tag", value = var.image_tag },
+    { name = "auth.existingSecret", value = kubernetes_secret.app.metadata[0].name },
+  ]
+
+  set_sensitive = [
+    { name = "database.url", value = var.db_url },
+  ]
+}
+```
+
+Then supply the per-cloud inputs. Only the filename differs across clouds:
+
+```hcl
+# live/aws/shopmicro/terragrunt.hcl  (inputs additions)
+inputs = {
+  # ...chart_path, chart_version, db_url as before...
+  values_file = "${get_repo_root()}/charts/shopmicro/values-aws.yaml"
+  jwt_secret  = get_env("SHOPMICRO_JWT_SECRET") # from CI / a secrets manager, never committed
+}
+```
+
+### 5. DNS
+
+Each ingress exposes an address — an ALB DNS name, a GCE static IP, an Application Gateway IP. Point your hostname at it. The teachable, explicit path is a single record per cloud in your DNS provider:
+
+```text
+shop.aws.example.com    CNAME  k8s-shopmicro-abc123.us-east-1.elb.amazonaws.com
+shop.gcp.example.com    A      34.120.0.0     # the reserved shopmicro-ip
+shop.azure.example.com  A      20.62.0.0      # the Application Gateway public IP
+```
+
+In a real fleet you'd automate this with `external-dns`, which watches `Ingress` objects and writes these records for you — but doing it by hand once makes the mapping from ingress to hostname concrete.
+
+## Verify
+
+Apply the updated unit and read back the ingress. The address field is what DNS points at:
+
+```bash
+cd live/aws/shopmicro
+terragrunt apply
+kubectl get ingress -n shopmicro
+```
+
+```text
+NAME        CLASS   HOSTS                  ADDRESS                                      PORTS
+shopmicro   alb     shop.aws.example.com   k8s-shopmicro-abc123.us-east-1.elb...        80, 443
+```
+
+Wait for the `ADDRESS` to populate (an ALB/GCE LB takes a minute or two to provision), confirm DNS resolves, then curl the app's health endpoint through the ingress:
+
+```bash
+curl -sS https://shop.aws.example.com/healthz
+```
+
+```text
+{"status":"ok"}
+```
+
+A `200` with `ok` means the request went ingress → gateway → service → pod, and ShopMicro is reachable from the public internet. If you get a `502`/`503`, the load balancer is up but its target (the gateway service) isn't healthy yet — check the ingress events and the gateway pod:
+
+```bash
+kubectl describe ingress shopmicro -n shopmicro
+kubectl get pods -n shopmicro
+```
+
+Run the same `terragrunt apply` and `curl` against `shop.gcp.example.com` and `shop.azure.example.com`. Three clouds, three native load balancers, one workload answering identically on all of them.
+
+**Check your understanding:**
+
+1. A `Kubernetes` `Ingress` object is portable, yet ShopMicro needs a different one per cloud. What is portable about it, and what is not?
+2. Why put ingress annotations in a `values-<cloud>.yaml` file instead of Terraform `set` blocks?
+3. Why create the JWT secret as a `kubernetes_secret` rather than passing it as an ordinary chart value?
+4. What does `external-dns` automate that you did by hand here, and what does it watch to do it?
+
+## Recap
+
+ShopMicro is now reachable on every cloud, each through its native front door: an ALB on AWS, a GCE load balancer on GKE, an Application Gateway on Azure — driven by per-cloud `values-<cloud>.yaml` files layered onto the same chart, with app secrets managed as Kubernetes secrets and DNS pointed at each ingress address. The portable `Ingress` shape stayed constant; only the class and annotations changed, and those differences stayed confined to three small files.
+
+The platform runs a real workload on three clouds. The next thing any production system needs is to *see* itself. On to [Observability with Datadog →](/clouddeploy/en/datadog/), where the Datadog agent starts collecting ShopMicro's metrics, traces, and logs across every cluster.

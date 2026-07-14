@@ -1,0 +1,263 @@
+---
+title: The ShopMicro Helm release
+description: "deploy ShopMicro Helm chart ที่ vendor ไว้ด้วย Terraform helm_release ต่อสายเข้ากับ cluster และ managed database ผ่าน Terragrunt dependency"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+ทุกอย่างจนถึงตอนนี้เป็นเรื่องของ platform: [network](/clouddeploy/th/networking/), [managed Kubernetes cluster](/clouddeploy/th/kubernetes/) และ [managed Postgres database](/clouddeploy/th/data/) บนแต่ละ cloud บทนี้วาง workload จริงลงบนมัน — **ShopMicro** ที่ deploy ลงทุก cluster ด้วย Terraform `helm_release` เดียว โดยต่อ database URL ตรงจาก output ของ `data` module
+
+ชิ้นส่วนต่าง ๆ:
+
+- **สำเนา vendored** ของ ShopMicro Helm chart ดึงจาก [project #3](https://github.com/avetavos/realworld-shopmicro) (`deploy/helm/shopmicro`) เข้ามาที่ `charts/shopmicro` ที่ root ของ repo เพื่อให้ deploy ทำซ้ำได้และถูก pin ไว้แทนที่จะ fetch สด
+- module `modules/shopmicro` ที่เล็กและ **cloud-neutral** ซึ่งมีงานเดียวคือ `helm_release` — Terraform เดียวกันบนทั้งสาม cloud
+- Terragrunt unit `live/<cloud>/shopmicro` ที่ประกาศ `dependency` บนทั้ง `cluster` และ `data`, generate provider `helm`/`kubernetes` จาก output ของ cluster และสร้าง Postgres connection string จาก `db_host`, `db_user`, `db_password` และเพื่อน ๆ
+
+ในตอนจบ `terragrunt apply` ใน `live/aws/shopmicro` (และพี่น้อง `gcp`/`azure` ของมัน) จะ roll ShopMicro ลง cluster โดยคุยกับ managed database ส่วน ingress และ DNS มาใน [บทถัดไป](/clouddeploy/th/deploy-shopmicro/ingress-and-config/)
+
+## Why
+
+**ทำไมใช้ `helm_release` ของ Terraform แทน `helm install` ดิบใน CI?** เพราะ workload ควรอยู่ใน state และ dependency graph เดียวกับ infrastructure ที่มันพึ่งพา เมื่อ `data` module rotate password หรือ endpoint ของ `cluster` เปลี่ยน `helm_release` ที่อ่านค่าเหล่านั้นจาก `dependency.*.outputs` จะ re-render และ re-apply โดยไม่มีใครต้อง copy connection string ด้วยมือ chart ถูก *managed* ไม่ใช่ *invoked*
+
+**ทำไม vendor chart แทนที่จะอ้างอิง remote repository?** chart ของ ShopMicro อยู่ใน repo อื่น การดึงมันสดจะผูกทุก apply เข้ากับความพร้อมใช้ของ repo นั้นและ branch `main` ของมัน การ vendor สำเนาที่รู้ว่าดีไว้ใต้ `charts/shopmicro` pin สิ่งที่เรา deploy ไว้เป๊ะ ให้เรา review upgrade เป็น diff ได้ และทำให้ `terragrunt apply` เป็น hermetic ส่วน trade-off — คุณต้อง re-vendor อย่างตั้งใจเพื่อรับ upstream fix — นั่นแหละคือประเด็น: upgrade เป็นเรื่องที่จงใจ
+
+**ทำไมต้องเป็น module ที่ cloud-neutral?** ตัว `helm_release` เองไม่แคร์ว่ามันจะไปลงบน EKS, GKE หรือ AKS มีแค่ *provider* — วิธีที่ Terraform authenticate เข้า cluster — เท่านั้นที่เฉพาะ cloud และนั่นถูก generate ต่อ cloud ใน Terragrunt unit การให้ module cloud-neutral หมายความว่า chart ถูก deploy เหมือนกันทุกที่ ซึ่งเป็นสิ่งที่คำมั่นสัญญาแบบ "platform" ต้องการพอดี
+
+## Pros & cons
+
+**`helm_release` (Terraform-managed) vs `helm upgrade` in a CI step**
+
+- **Pros:** state เดียว dependency graph เดียว DB URL ไหลอัตโนมัติจาก output ของ `data` drift บน chart value มองเห็นได้ใน `terragrunt plan` และ teardown คือ `destroy` ที่สะอาด
+- **Cons:** ตอนนี้ Terraform เป็นเจ้าของ lifecycle ของ Helm ดังนั้น release ที่ค้าง (`pending-upgrade` ที่ติดอยู่) ต้องแกะผ่าน Terraform และ chart ที่ใหญ่มากทำให้ plan รก
+
+**Vendoring the chart vs referencing the upstream Helm repo by URL/version**
+
+- **Pros:** apply ที่ทำซ้ำได้ review ได้ และทำงาน offline ได้ มี source of truth เดียวเป๊ะสำหรับสิ่งที่ deploy
+- **Cons:** คุณแบก chart ไว้ใน repo และต้อง re-vendor เพื่อรับ upstream change และสำเนาอาจ drift จาก upstream ถ้าคุณลืม
+
+## Set it up
+
+### 1. `charts/shopmicro/` (vendor the chart)
+
+copy chart ของ ShopMicro ออกจาก project #3 เข้ามาใน repo นี้ จาก root ของ repo:
+
+```bash
+# One-time vendor of the ShopMicro Helm chart (pin a tag, not a moving branch)
+git clone --depth 1 --branch v1.0.0 \
+  https://github.com/avetavos/realworld-shopmicro /tmp/shopmicro
+cp -R /tmp/shopmicro/deploy/helm/shopmicro charts/shopmicro
+rm -rf /tmp/shopmicro
+```
+
+ตอนนี้คุณควรมี `charts/shopmicro/Chart.yaml`, `values.yaml` และ `templates/` ที่ commit เข้า CloudDeploy repo แล้ว บันทึก upstream tag ไว้ใน comment หรือ `CHANGELOG` เพื่อให้การ re-vendor ครั้งถัดไปชัดเจน
+
+### 2. `modules/shopmicro/` (the cloud-neutral release)
+
+module นี้ตั้งใจให้บาง: variable เข้า, `helm_release` เดียวออก มันอ่าน chart จาก absolute path บน disk (คำนวณโดย Terragrunt unit) ดังนั้นจึงไม่มีอะไรถูก fetch ตอน apply
+
+```hcl
+# modules/shopmicro/versions.tf
+terraform {
+  required_providers {
+    helm       = { source = "hashicorp/helm", version = "~> 3.0" }
+    kubernetes = { source = "hashicorp/kubernetes", version = "~> 2.30" }
+  }
+}
+```
+
+```hcl
+# modules/shopmicro/variables.tf
+variable "chart_path"    { type = string }                 # absolute path to charts/shopmicro
+variable "chart_version" { type = string }                 # the vendored chart's version
+variable "namespace"     { type = string, default = "shopmicro" }
+variable "image_tag"     { type = string, default = "latest" }
+variable "db_url"        { type = string, sensitive = true } # postgres:// ... built from data outputs
+```
+
+```hcl
+# modules/shopmicro/main.tf
+resource "helm_release" "shopmicro" {
+  name             = "shopmicro"
+  namespace        = var.namespace
+  create_namespace = true
+
+  chart   = var.chart_path
+  version = var.chart_version
+
+  # helm provider v3: set / set_sensitive are lists of objects.
+  set = [
+    { name = "image.tag", value = var.image_tag },
+  ]
+
+  set_sensitive = [
+    { name = "database.url", value = var.db_url },
+  ]
+}
+
+output "namespace" {
+  value = helm_release.shopmicro.namespace
+}
+```
+
+key `database.url` ตรงนี้ตรงกับ chart value ของ ShopMicro — Postgres DSN เดียวที่ service ทั้งหลายอ่าน เพราะมันพา password มาด้วย มันจึงไปใน `set_sensitive` ไม่ใช่ `set` ธรรมดา
+
+### 3. `live/aws/shopmicro/terragrunt.hcl` (wire the dependencies)
+
+unit นี้เป็นที่ที่ความจริงเฉพาะ cloud ลงมา: จะ authenticate เข้า cluster ไหน และจะสร้าง DB URL จาก output ของ `data` อย่างไร
+
+```hcl
+include "root" { path = find_in_parent_folders("root.hcl") }
+
+terraform { source = "../../../modules/shopmicro" }
+
+dependency "cluster" {
+  config_path = "../cluster"
+  mock_outputs = {
+    cluster_name     = "clouddeploy"
+    cluster_endpoint = "https://localhost"
+    cluster_ca       = "" # base64
+  }
+}
+
+dependency "data" {
+  config_path = "../data"
+  mock_outputs = {
+    db_host     = "localhost"
+    db_port     = 5432
+    db_name     = "shopmicro"
+    db_user     = "shopmicro"
+    db_password = "mock"
+  }
+}
+
+# Authenticate the helm/kubernetes providers to THIS cluster (EKS variant).
+generate "k8s_providers" {
+  path      = "k8s_providers.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<EOF
+data "aws_eks_cluster_auth" "this" {
+  name = "${dependency.cluster.outputs.cluster_name}"
+}
+provider "helm" {
+  kubernetes = {
+    host                   = "${dependency.cluster.outputs.cluster_endpoint}"
+    cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+    token                  = data.aws_eks_cluster_auth.this.token
+  }
+}
+provider "kubernetes" {
+  host                   = "${dependency.cluster.outputs.cluster_endpoint}"
+  cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+  token                  = data.aws_eks_cluster_auth.this.token
+}
+EOF
+}
+
+inputs = {
+  chart_path    = "${get_repo_root()}/charts/shopmicro"
+  chart_version = "1.0.0"
+  db_url = format(
+    "postgres://%s:%s@%s:%s/%s",
+    dependency.data.outputs.db_user,
+    dependency.data.outputs.db_password,
+    dependency.data.outputs.db_host,
+    dependency.data.outputs.db_port,
+    dependency.data.outputs.db_name,
+  )
+}
+```
+
+สองอย่างพิสูจน์คุณค่าตรงนี้ `mock_outputs` ให้ `terragrunt plan` รันได้ก่อนที่ `cluster` และ `data` จะเคยถูก apply ดังนั้นทั้ง tree `live/aws` จึง plan เป็นหน่วยเดียวได้ และ `get_repo_root()` resolve chart ที่ vendor ไว้เป็น absolute path เพื่อให้ `helm_release` อ่านมันจาก disk แทน module cache ที่ copy มา
+
+### 4. `live/gcp/shopmicro/` และ `live/azure/shopmicro/` (the same, one block different)
+
+block `dependency`, `inputs` และการสร้าง `db_url` นั้น **เหมือนกันเป๊ะ** — นั่นคือผลตอบแทนของ module interface ที่สม่ำเสมอ มีแค่ auth ของ provider ที่ generate ขึ้นเท่านั้นที่ต่างกัน เพราะแต่ละ cloud แจก cluster token คนละวิธี:
+
+```hcl
+# GCP (GKE): token from the google provider's client config
+data "google_client_config" "this" {}
+provider "helm" {
+  kubernetes = {
+    host                   = "https://${dependency.cluster.outputs.cluster_endpoint}"
+    cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+    token                  = data.google_client_config.this.access_token
+  }
+}
+```
+
+```hcl
+# Azure (AKS): the cluster module exposes the admin kubeconfig bits directly
+provider "helm" {
+  kubernetes = {
+    host                   = "${dependency.cluster.outputs.cluster_endpoint}"
+    cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+    client_certificate     = base64decode("${dependency.cluster.outputs.client_certificate}")
+    client_key             = base64decode("${dependency.cluster.outputs.client_key}")
+  }
+}
+```
+
+นี่คือภาษี multi-cloud ที่ซื่อตรงที่ [architecture](/clouddeploy/th/introduction/architecture/) ตั้งชื่อไว้ตั้งแต่ต้น: สามวิธีในการได้ cluster credential Terragrunt กักมันไว้ในไฟล์ generate หนึ่งไฟล์ต่อ cloud แทนที่จะปล่อยให้มันรั่วเข้าไปใน module
+
+## Verify
+
+init และ plan unit ของ AWS plan ควรแสดง `helm_release.shopmicro` หนึ่งตัวที่จะ add:
+
+```bash
+cd live/aws/shopmicro
+terragrunt plan
+```
+
+```text
+Terraform will perform the following actions:
+  # helm_release.shopmicro will be created
+  + resource "helm_release" "shopmicro" {
+      + name             = "shopmicro"
+      + namespace        = "shopmicro"
+      + chart            = "/…/charts/shopmicro"
+      + version          = "1.0.0"
+      + create_namespace = true
+    }
+Plan: 1 to add, 0 to change, 0 to destroy.
+```
+
+apply มัน จากนั้นยืนยัน release และ pod ของมันด้วย `kubectl` (ใช้ kubeconfig ที่คุณสร้างใน module [Managed Kubernetes](/clouddeploy/th/kubernetes/)):
+
+```bash
+terragrunt apply
+helm list -n shopmicro
+kubectl get pods -n shopmicro
+```
+
+```text
+NAME       NAMESPACE   REVISION   STATUS     CHART             APP VERSION
+shopmicro  shopmicro   1          deployed   shopmicro-1.0.0   1.0.0
+
+NAME                                 READY   STATUS    RESTARTS   AGE
+shopmicro-gateway-6d8c...            1/1     Running   0          40s
+shopmicro-users-7b9f...              1/1     Running   0          40s
+shopmicro-orders-5c4d...             1/1     Running   0          40s
+```
+
+pod ที่ `Running` และอ่าน managed database ได้หมายความว่า workload ขึ้นแล้ว ถ้า service ตัวไหน `CrashLoopBackOff` ให้เช็ก log ของมันหา Postgres connection error ก่อน — นั่นเกือบทุกครั้งคือปัญหาการต่อสาย `db_url` ไม่ใช่ปัญหาของ chart:
+
+```bash
+kubectl logs -n shopmicro deploy/shopmicro-gateway
+```
+
+ทำ `terragrunt apply` ซ้ำใน `live/gcp/shopmicro` และ `live/azure/shopmicro` เพื่อให้ได้ workload เดียวกันบนทั้งสาม cloud
+
+**ตรวจสอบความเข้าใจ:**
+
+1. ทำไม `db_url` ถึงถูกสร้างใน Terragrunt unit จาก `dependency.data.outputs` แทนที่จะ hard-code เป็น chart value?
+2. อะไรจะพังถ้าคุณอ้างอิง upstream chart repository ด้วย URL แทนที่จะ vendor มันไว้ใต้ `charts/shopmicro`?
+3. module `modules/shopmicro` เป็น cloud-neutral แต่การ deploy ยังต่างกันต่อ cloud ความต่างนั้นอยู่ที่ไหน และทำไมถึงอยู่ตรงนั้น?
+4. `mock_outputs` บน dependency `cluster` และ `data` ให้คุณทำอะไรได้ที่ไม่งั้นคุณทำไม่ได้?
+
+## Recap
+
+ตอนนี้ ShopMicro รันบนทุก cluster ในรูป `helm_release` ที่ Terraform managed: chart ที่ vendor ไว้, module ที่บางและ cloud-neutral และ unit `live/<cloud>/shopmicro` ที่ดึง cluster credential และ database URL ตรงจาก dependency `cluster` และ `data` ของมัน workload อยู่ใน state และ dependency graph เดียวกับ infrastructure ที่อยู่ข้างใต้ — ดังนั้น password ที่ rotate หรือ cluster ที่ rebuild จะไหลผ่านมาในการ apply ครั้งถัดไป
+
+pod อยู่ในสถานะ `Running` แล้ว แต่ยังไม่มีอะไรจากนอก cluster เข้าถึงมันได้ ถัดไป [Ingress and per-cloud config →](/clouddeploy/th/deploy-shopmicro/ingress-and-config/) วาง ShopMicro ไว้หลัง ingress และ DNS บนแต่ละ cloud แล้วพิสูจน์ว่า app ตอบผ่าน HTTP ได้

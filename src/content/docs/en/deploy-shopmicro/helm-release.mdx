@@ -1,0 +1,263 @@
+---
+title: The ShopMicro Helm release
+description: "Deploy the vendored ShopMicro Helm chart with a Terraform helm_release, wired to the cluster and managed database through Terragrunt dependencies."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+Everything up to now has been platform: a [network](/clouddeploy/en/networking/), a [managed Kubernetes cluster](/clouddeploy/en/kubernetes/), and a [managed Postgres database](/clouddeploy/en/data/) on each cloud. This lesson puts the actual workload on top of it — **ShopMicro**, deployed to every cluster with a single Terraform `helm_release`, its database URL wired straight from the `data` module's outputs.
+
+The pieces:
+
+- A **vendored copy** of the ShopMicro Helm chart, pulled from [project #3](https://github.com/avetavos/realworld-shopmicro) (`deploy/helm/shopmicro`) into `charts/shopmicro` at the repo root, so the deploy is reproducible and pinned rather than fetched live.
+- A small, **cloud-neutral** `modules/shopmicro` module whose only job is the `helm_release` — the same Terraform on all three clouds.
+- A `live/<cloud>/shopmicro` Terragrunt unit that declares a `dependency` on both `cluster` and `data`, generates the `helm`/`kubernetes` providers from the cluster outputs, and builds the Postgres connection string from `db_host`, `db_user`, `db_password`, and friends.
+
+By the end, `terragrunt apply` in `live/aws/shopmicro` (and its `gcp`/`azure` siblings) rolls ShopMicro onto the cluster, talking to the managed database. Ingress and DNS come in the [next lesson](/clouddeploy/en/deploy-shopmicro/ingress-and-config/).
+
+## Why
+
+**Why Terraform's `helm_release` instead of a raw `helm install` in CI?** Because the workload should live in the same state and dependency graph as the infrastructure it depends on. When the `data` module rotates a password or the `cluster` endpoint changes, a `helm_release` that reads those from `dependency.*.outputs` re-renders and re-applies without anyone hand-copying a connection string. The chart is *managed*, not *invoked*.
+
+**Why vendor the chart instead of referencing a remote repository?** ShopMicro's chart lives in another repo. Pulling it live would couple every apply to that repo's availability and its `main` branch. Vendoring a known-good copy under `charts/shopmicro` pins exactly what we deploy, lets us review upgrades as diffs, and keeps `terragrunt apply` hermetic. The trade-off — you have to consciously re-vendor to pick up upstream fixes — is the point: upgrades are deliberate.
+
+**Why a cloud-neutral module?** The `helm_release` itself doesn't care whether it's landing on EKS, GKE, or AKS. Only the *provider* — how Terraform authenticates to the cluster — is cloud-specific, and that's generated per cloud in the Terragrunt unit. Keeping the module cloud-neutral means the chart is deployed identically everywhere, which is exactly what a "platform" promise requires.
+
+## Pros & cons
+
+**`helm_release` (Terraform-managed) vs `helm upgrade` in a CI step**
+
+- **Pros:** one state, one dependency graph; DB URL flows automatically from the `data` outputs; drift on chart values is visible in `terragrunt plan`; teardown is a clean `destroy`.
+- **Cons:** Terraform now owns Helm's lifecycle, so a wedged release (a stuck `pending-upgrade`) has to be untangled through Terraform; very large charts make plans noisy.
+
+**Vendoring the chart vs referencing the upstream Helm repo by URL/version**
+
+- **Pros:** reproducible, reviewable, offline-capable applies; exactly one source of truth for what's deployed.
+- **Cons:** you carry the chart in your repo and must re-vendor to get upstream changes; the copy can drift from upstream if you forget.
+
+## Set it up
+
+### 1. `charts/shopmicro/` (vendor the chart)
+
+Copy ShopMicro's chart out of project #3 and into this repo. From the repo root:
+
+```bash
+# One-time vendor of the ShopMicro Helm chart (pin a tag, not a moving branch)
+git clone --depth 1 --branch v1.0.0 \
+  https://github.com/avetavos/realworld-shopmicro /tmp/shopmicro
+cp -R /tmp/shopmicro/deploy/helm/shopmicro charts/shopmicro
+rm -rf /tmp/shopmicro
+```
+
+You should now have `charts/shopmicro/Chart.yaml`, `values.yaml`, and `templates/` committed to the CloudDeploy repo. Record the upstream tag in a comment or `CHANGELOG` so the next re-vendor is obvious.
+
+### 2. `modules/shopmicro/` (the cloud-neutral release)
+
+The module is deliberately thin: variables in, one `helm_release` out. It reads the chart from an absolute path on disk (computed by the Terragrunt unit), so nothing is fetched at apply time.
+
+```hcl
+# modules/shopmicro/versions.tf
+terraform {
+  required_providers {
+    helm       = { source = "hashicorp/helm", version = "~> 3.0" }
+    kubernetes = { source = "hashicorp/kubernetes", version = "~> 2.30" }
+  }
+}
+```
+
+```hcl
+# modules/shopmicro/variables.tf
+variable "chart_path"    { type = string }                 # absolute path to charts/shopmicro
+variable "chart_version" { type = string }                 # the vendored chart's version
+variable "namespace"     { type = string, default = "shopmicro" }
+variable "image_tag"     { type = string, default = "latest" }
+variable "db_url"        { type = string, sensitive = true } # postgres:// ... built from data outputs
+```
+
+```hcl
+# modules/shopmicro/main.tf
+resource "helm_release" "shopmicro" {
+  name             = "shopmicro"
+  namespace        = var.namespace
+  create_namespace = true
+
+  chart   = var.chart_path
+  version = var.chart_version
+
+  # helm provider v3: set / set_sensitive are lists of objects.
+  set = [
+    { name = "image.tag", value = var.image_tag },
+  ]
+
+  set_sensitive = [
+    { name = "database.url", value = var.db_url },
+  ]
+}
+
+output "namespace" {
+  value = helm_release.shopmicro.namespace
+}
+```
+
+The `database.url` key here matches ShopMicro's chart values — a single Postgres DSN the services read. Because it carries the password, it goes in `set_sensitive`, never plain `set`.
+
+### 3. `live/aws/shopmicro/terragrunt.hcl` (wire the dependencies)
+
+This unit is where cloud-specific truth lands: which cluster to authenticate to, and how to build the DB URL from the `data` outputs.
+
+```hcl
+include "root" { path = find_in_parent_folders("root.hcl") }
+
+terraform { source = "../../../modules/shopmicro" }
+
+dependency "cluster" {
+  config_path = "../cluster"
+  mock_outputs = {
+    cluster_name     = "clouddeploy"
+    cluster_endpoint = "https://localhost"
+    cluster_ca       = "" # base64
+  }
+}
+
+dependency "data" {
+  config_path = "../data"
+  mock_outputs = {
+    db_host     = "localhost"
+    db_port     = 5432
+    db_name     = "shopmicro"
+    db_user     = "shopmicro"
+    db_password = "mock"
+  }
+}
+
+# Authenticate the helm/kubernetes providers to THIS cluster (EKS variant).
+generate "k8s_providers" {
+  path      = "k8s_providers.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<EOF
+data "aws_eks_cluster_auth" "this" {
+  name = "${dependency.cluster.outputs.cluster_name}"
+}
+provider "helm" {
+  kubernetes = {
+    host                   = "${dependency.cluster.outputs.cluster_endpoint}"
+    cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+    token                  = data.aws_eks_cluster_auth.this.token
+  }
+}
+provider "kubernetes" {
+  host                   = "${dependency.cluster.outputs.cluster_endpoint}"
+  cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+  token                  = data.aws_eks_cluster_auth.this.token
+}
+EOF
+}
+
+inputs = {
+  chart_path    = "${get_repo_root()}/charts/shopmicro"
+  chart_version = "1.0.0"
+  db_url = format(
+    "postgres://%s:%s@%s:%s/%s",
+    dependency.data.outputs.db_user,
+    dependency.data.outputs.db_password,
+    dependency.data.outputs.db_host,
+    dependency.data.outputs.db_port,
+    dependency.data.outputs.db_name,
+  )
+}
+```
+
+Two things earn their keep here. `mock_outputs` let `terragrunt plan` run before `cluster` and `data` have ever been applied, so the whole `live/aws` tree plans as a unit. And `get_repo_root()` resolves the vendored chart to an absolute path, so `helm_release` reads it from disk instead of a copied module cache.
+
+### 4. `live/gcp/shopmicro/` and `live/azure/shopmicro/` (the same, one block different)
+
+The `dependency` blocks, `inputs`, and `db_url` construction are **identical** — that's the payoff of a consistent module interface. Only the generated provider's auth differs, because each cloud hands out a cluster token its own way:
+
+```hcl
+# GCP (GKE): token from the google provider's client config
+data "google_client_config" "this" {}
+provider "helm" {
+  kubernetes = {
+    host                   = "https://${dependency.cluster.outputs.cluster_endpoint}"
+    cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+    token                  = data.google_client_config.this.access_token
+  }
+}
+```
+
+```hcl
+# Azure (AKS): the cluster module exposes the admin kubeconfig bits directly
+provider "helm" {
+  kubernetes = {
+    host                   = "${dependency.cluster.outputs.cluster_endpoint}"
+    cluster_ca_certificate = base64decode("${dependency.cluster.outputs.cluster_ca}")
+    client_certificate     = base64decode("${dependency.cluster.outputs.client_certificate}")
+    client_key             = base64decode("${dependency.cluster.outputs.client_key}")
+  }
+}
+```
+
+This is the honest multi-cloud tax the [architecture](/clouddeploy/en/introduction/architecture/) named up front: three ways to get a cluster credential. Terragrunt confines it to one generated file per cloud instead of letting it leak into the module.
+
+## Verify
+
+Initialize and plan the AWS unit. The plan should show one `helm_release.shopmicro` to add:
+
+```bash
+cd live/aws/shopmicro
+terragrunt plan
+```
+
+```text
+Terraform will perform the following actions:
+  # helm_release.shopmicro will be created
+  + resource "helm_release" "shopmicro" {
+      + name             = "shopmicro"
+      + namespace        = "shopmicro"
+      + chart            = "/…/charts/shopmicro"
+      + version          = "1.0.0"
+      + create_namespace = true
+    }
+Plan: 1 to add, 0 to change, 0 to destroy.
+```
+
+Apply it, then confirm the release and its pods with `kubectl` (using the kubeconfig you built in the [Managed Kubernetes](/clouddeploy/en/kubernetes/) module):
+
+```bash
+terragrunt apply
+helm list -n shopmicro
+kubectl get pods -n shopmicro
+```
+
+```text
+NAME       NAMESPACE   REVISION   STATUS     CHART             APP VERSION
+shopmicro  shopmicro   1          deployed   shopmicro-1.0.0   1.0.0
+
+NAME                                 READY   STATUS    RESTARTS   AGE
+shopmicro-gateway-6d8c...            1/1     Running   0          40s
+shopmicro-users-7b9f...              1/1     Running   0          40s
+shopmicro-orders-5c4d...             1/1     Running   0          40s
+```
+
+Pods `Running` and reading the managed database means the workload is up. If a service is `CrashLoopBackOff`, check its logs for a Postgres connection error first — that's almost always a `db_url` wiring problem, not a chart problem:
+
+```bash
+kubectl logs -n shopmicro deploy/shopmicro-gateway
+```
+
+Repeat `terragrunt apply` in `live/gcp/shopmicro` and `live/azure/shopmicro` to get the same workload on all three clouds.
+
+**Check your understanding:**
+
+1. Why is the `db_url` built in the Terragrunt unit from `dependency.data.outputs` rather than hard-coded as a chart value?
+2. What breaks if you reference the upstream chart repository by URL instead of vendoring it under `charts/shopmicro`?
+3. The `modules/shopmicro` module is cloud-neutral, yet the deploy still differs per cloud. Where does the difference live, and why there?
+4. What do `mock_outputs` on the `cluster` and `data` dependencies let you do that you couldn't otherwise?
+
+## Recap
+
+ShopMicro now runs on every cluster as a Terraform-managed `helm_release`: a vendored chart, a thin cloud-neutral module, and a `live/<cloud>/shopmicro` unit that pulls the cluster credential and the database URL straight from its `cluster` and `data` dependencies. The workload lives in the same state and dependency graph as the infrastructure beneath it — so a rotated password or a rebuilt cluster flows through on the next apply.
+
+The pods are `Running`, but nothing outside the cluster can reach them yet. Next, [Ingress and per-cloud config →](/clouddeploy/en/deploy-shopmicro/ingress-and-config/) puts ShopMicro behind an ingress and DNS on each cloud and proves the app answers over HTTP.

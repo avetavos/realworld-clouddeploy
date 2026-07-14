@@ -1,0 +1,205 @@
+---
+title: Ingress and per-cloud config
+description: "expose ShopMicro ผ่าน ingress ของแต่ละ cloud — AWS ALB, GKE GCE ingress, Azure ingress — ต่อ DNS วาง value และ secret ต่อ cloud แล้วพิสูจน์ว่า app ตอบผ่าน HTTP"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+[บทก่อนหน้า](/clouddeploy/th/deploy-shopmicro/helm-release/) ทำให้ pod ของ ShopMicro `Running` บนทั้งสาม cluster — แต่ยังไม่มีอะไรจากนอก cluster เข้าถึงมันได้ บทนี้เปิดประตู: **ingress** ที่วางไว้หน้า gateway ของ ShopMicro บนแต่ละ cloud, **DNS** ที่ชี้มาที่มัน และชุดเล็ก ๆ ของ **value และ secret ต่อ cloud** ที่ chart ต้องใช้เพื่อให้เข้าถึงได้
+
+จุดยากคือ "ingress" เป็นที่ที่ cloud แตกต่างกันมากที่สุด object `Ingress` ของ Kubernetes นั้น portable แต่ controller ที่เติมเต็มมัน — และ load balancer ที่มัน provision — เฉพาะ cloud:
+
+- **AWS:** AWS Load Balancer Controller เปลี่ยน `Ingress` ให้เป็น **ALB** (`ingressClassName: alb`, annotation `alb.ingress.kubernetes.io/*`)
+- **GCP:** ingress ในตัวของ GKE เปลี่ยน `Ingress` ให้เป็น **GCE external HTTP(S) load balancer** (`ingressClassName: gce`)
+- **Azure:** **Application Gateway Ingress Controller** (AGIC) เปลี่ยน `Ingress` ให้เป็น Application Gateway (`ingressClassName: azure-application-gateway`)
+
+เราขับเคลื่อนทั้งหมดผ่าน `helm_release` เดียวกัน — ไฟล์ value ต่อ cloud ที่ layer ทับ default ของ chart — เพื่อให้ส่วนที่แตกต่างถูกกักไว้ใน `charts/shopmicro/values-<cloud>.yaml`
+
+## Why
+
+**ทำไมปล่อยให้ native controller ของแต่ละ cloud เป็นเจ้าของ ingress แทนที่จะติดตั้ง ingress-nginx ทุกที่?** คุณ *ทำได้* ที่จะรัน ingress-nginx บนทั้งสามแล้วได้ ingress class เดียวเหมือนกัน — และนั่นเป็นตัวเลือกที่ถูกต้อง แต่ native controller integrate เข้ากับ certificate management, WAF และ health checking ของแต่ละ cloud และมันคือสิ่งที่ทีมบน cloud นั้นจะ operate จริง จุดยืนที่ซื่อตรงของ CloudDeploy คือใช้ประตูหน้าของแต่ละ cloud แล้ว *ตั้งชื่อ* ความต่าง แทนที่จะกลบมันด้วย proxy แบบ lowest-common-denominator รูปร่างของ `Ingress` spec ยังเหมือนเดิม มีแค่ class และ annotation ที่เปลี่ยน
+
+**ทำไมใช้ไฟล์ value ต่อ cloud แทนที่จะเป็น block `set` กองใหญ่?** ingress annotation ยาวและเฉพาะ cloud การร้อย key `alb.ingress.kubernetes.io/*` เป็นโหล ๆ ผ่าน list `set` ของ Terraform นั้นรกและ review ยาก ไฟล์ `values-aws.yaml` ที่ layer ผ่าน argument `values` ของ release เก็บ config เฉพาะ cloud ไว้เป็น YAML ที่อ่านง่าย version ไว้ข้าง chart และ diff ได้
+
+**ทำไม manage secret ของ app เป็น Kubernetes `Secret` ใน Terraform?** ShopMicro ต้องการมากกว่า DB URL — JWT signing key อาจมี session secret สิ่งเหล่านั้นไม่ควรถูกฝังลงใน value การสร้างมันเป็น `kubernetes_secret` (จาก sensitive variable) แล้วอ้างอิงมันด้วยชื่อใน chart จะเก็บ secret ไว้นอก manifest ที่ render และนอก plan output
+
+## Pros & cons
+
+**Native per-cloud ingress (ALB / GCE / AGIC) vs a single portable ingress-nginx on all three**
+
+- **Pros:** integrate เข้ากับ cert, WAF และ health check ของแต่ละ cloud เป็นสิ่งที่ operator ของ cloud นั้นคาดหวัง และไม่มี component เพิ่มที่ต้องรัน
+- **Cons:** ต้องเรียน ingress class สามตัวและคำศัพท์ annotation สามชุด และ `Ingress` เป็นเพียง *ส่วนใหญ่* เท่านั้นที่ portable
+
+**Per-cloud `values-<cloud>.yaml` files vs one `values.yaml` with conditionals**
+
+- **Pros:** config เฉพาะ cloud ถูกแยก อ่านง่าย และ review ได้ base chart ยังสะอาด
+- **Cons:** มีสามไฟล์ที่ต้องรักษาให้ตรงกัน และ change ที่ใช้ร่วมต้องทำในแต่ละไฟล์
+
+## Set it up
+
+### 1. `charts/shopmicro/values-aws.yaml` (ALB ingress)
+
+layer config ของ ingress เฉพาะ AWS ทับ default ของ chart อันนี้สมมติว่า AWS Load Balancer Controller ถูกติดตั้งบน cluster แล้ว (เป็นส่วนของ platform layer) และ gateway service เป็นเป้าหมายของ ingress
+
+```yaml
+# charts/shopmicro/values-aws.yaml
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:123456789012:certificate/REPLACE
+  hosts:
+    - host: shop.aws.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+```
+
+### 2. `charts/shopmicro/values-gcp.yaml` (GCE ingress)
+
+ingress controller ของ GKE อ่าน `ingressClassName: gce` แล้ว provision external HTTP(S) load balancer `ManagedCertificate` (อ้างอิงผ่าน annotation) จัดการ TLS
+
+```yaml
+# charts/shopmicro/values-gcp.yaml
+ingress:
+  enabled: true
+  className: gce
+  annotations:
+    kubernetes.io/ingress.global-static-ip-name: shopmicro-ip
+    networking.gke.io/managed-certificates: shopmicro-cert
+  hosts:
+    - host: shop.gcp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+```
+
+### 3. `charts/shopmicro/values-azure.yaml` (AGIC ingress)
+
+Application Gateway Ingress Controller เติมเต็ม `Ingress` บน Application Gateway โดยทั่วไป TLS ถูก terminate ด้วย certificate ที่อ้างอิงจาก Key Vault ผ่าน annotation
+
+```yaml
+# charts/shopmicro/values-azure.yaml
+ingress:
+  enabled: true
+  className: azure-application-gateway
+  annotations:
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: shop.azure.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+```
+
+### 4. Load the values file and the app secret in each unit
+
+กลับมาที่ `live/<cloud>/shopmicro/terragrunt.hcl` ชี้ release ไปที่ไฟล์ value ที่ถูกต้องแล้วเพิ่ม app secret ก่อนอื่นสอนให้ module รับมันได้:
+
+```hcl
+# modules/shopmicro/variables.tf  (additions)
+variable "values_file" { type = string }                 # absolute path to values-<cloud>.yaml
+variable "jwt_secret"  { type = string, sensitive = true }
+```
+
+```hcl
+# modules/shopmicro/main.tf  (additions)
+resource "kubernetes_secret" "app" {
+  metadata {
+    name      = "shopmicro-app"
+    namespace = var.namespace
+  }
+  data = {
+    "jwt-secret" = var.jwt_secret
+  }
+}
+
+resource "helm_release" "shopmicro" {
+  # ...name / chart / version as before...
+  values = [file(var.values_file)]
+
+  set = [
+    { name = "image.tag", value = var.image_tag },
+    { name = "auth.existingSecret", value = kubernetes_secret.app.metadata[0].name },
+  ]
+
+  set_sensitive = [
+    { name = "database.url", value = var.db_url },
+  ]
+}
+```
+
+จากนั้นจ่าย input ต่อ cloud มีแค่ชื่อไฟล์ที่ต่างกันข้าม cloud:
+
+```hcl
+# live/aws/shopmicro/terragrunt.hcl  (inputs additions)
+inputs = {
+  # ...chart_path, chart_version, db_url as before...
+  values_file = "${get_repo_root()}/charts/shopmicro/values-aws.yaml"
+  jwt_secret  = get_env("SHOPMICRO_JWT_SECRET") # from CI / a secrets manager, never committed
+}
+```
+
+### 5. DNS
+
+แต่ละ ingress expose address — ALB DNS name, GCE static IP, Application Gateway IP ชี้ hostname ของคุณมาที่มัน path ที่สอนได้และชัดเจนคือ record เดียวต่อ cloud ใน DNS provider ของคุณ:
+
+```text
+shop.aws.example.com    CNAME  k8s-shopmicro-abc123.us-east-1.elb.amazonaws.com
+shop.gcp.example.com    A      34.120.0.0     # the reserved shopmicro-ip
+shop.azure.example.com  A      20.62.0.0      # the Application Gateway public IP
+```
+
+ใน fleet จริงคุณจะ automate สิ่งนี้ด้วย `external-dns` ที่เฝ้าดู object `Ingress` แล้วเขียน record เหล่านี้ให้คุณ — แต่การทำมันด้วยมือครั้งหนึ่งทำให้ mapping จาก ingress ไปยัง hostname เป็นรูปธรรม
+
+## Verify
+
+apply unit ที่อัปเดตแล้วอ่าน ingress กลับมา field address คือสิ่งที่ DNS ชี้ไป:
+
+```bash
+cd live/aws/shopmicro
+terragrunt apply
+kubectl get ingress -n shopmicro
+```
+
+```text
+NAME        CLASS   HOSTS                  ADDRESS                                      PORTS
+shopmicro   alb     shop.aws.example.com   k8s-shopmicro-abc123.us-east-1.elb...        80, 443
+```
+
+รอให้ `ADDRESS` ปรากฏ (ALB/GCE LB ใช้เวลาหนึ่งสองนาทีในการ provision) ยืนยันว่า DNS resolve ได้ จากนั้น curl health endpoint ของ app ผ่าน ingress:
+
+```bash
+curl -sS https://shop.aws.example.com/healthz
+```
+
+```text
+{"status":"ok"}
+```
+
+`200` พร้อม `ok` หมายความว่า request เดินทาง ingress → gateway → service → pod และ ShopMicro เข้าถึงได้จาก public internet ถ้าคุณได้ `502`/`503` แสดงว่า load balancer ขึ้นแล้วแต่เป้าหมายของมัน (gateway service) ยังไม่ healthy — เช็ก event ของ ingress และ gateway pod:
+
+```bash
+kubectl describe ingress shopmicro -n shopmicro
+kubectl get pods -n shopmicro
+```
+
+รัน `terragrunt apply` และ `curl` แบบเดียวกันกับ `shop.gcp.example.com` และ `shop.azure.example.com` สาม cloud สาม native load balancer หนึ่ง workload ที่ตอบเหมือนกันบนทุกตัว
+
+**ตรวจสอบความเข้าใจ:**
+
+1. object `Ingress` ของ `Kubernetes` นั้น portable แต่ ShopMicro ต้องการมันคนละตัวต่อ cloud อะไรที่ portable เกี่ยวกับมัน และอะไรที่ไม่?
+2. ทำไมวาง ingress annotation ในไฟล์ `values-<cloud>.yaml` แทนที่จะเป็น block `set` ของ Terraform?
+3. ทำไมสร้าง JWT secret เป็น `kubernetes_secret` แทนที่จะส่งมันเป็น chart value ธรรมดา?
+4. `external-dns` automate อะไรที่คุณทำด้วยมือตรงนี้ และมันเฝ้าดูอะไรเพื่อทำสิ่งนั้น?
+
+## Recap
+
+ตอนนี้ ShopMicro เข้าถึงได้บนทุก cloud แต่ละตัวผ่านประตูหน้า native ของมัน: ALB บน AWS, GCE load balancer บน GKE, Application Gateway บน Azure — ขับเคลื่อนด้วยไฟล์ `values-<cloud>.yaml` ต่อ cloud ที่ layer ทับ chart เดียวกัน โดย app secret ถูก manage เป็น Kubernetes secret และ DNS ชี้ไปที่ address ของแต่ละ ingress รูปร่าง `Ingress` ที่ portable ยังคงที่ มีแค่ class และ annotation ที่เปลี่ยน และความต่างเหล่านั้นถูกกักไว้ในสามไฟล์เล็ก ๆ
+
+platform รัน workload จริงบนสาม cloud สิ่งถัดไปที่ระบบ production ต้องการคือการ *เห็น* ตัวเอง ไปที่ [Observability with Datadog →](/clouddeploy/th/datadog/) ที่ Datadog agent เริ่มเก็บ metric, trace และ log ของ ShopMicro ข้ามทุก cluster
