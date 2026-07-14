@@ -1,0 +1,60 @@
+---
+title: Next steps
+description: "extension ที่เป็นรูปธรรมซึ่งพา CloudDeploy จากแก่นที่สอนได้ไปสู่ platform ที่คุณจะรันจริง"
+sidebar:
+  order: 2
+---
+
+platform ที่คุณสร้างตั้งใจให้ห่างจาก production หนึ่งก้าวอย่างซื่อสัตย์ — พอที่จะพิสูจน์ทุก pattern เล็กพอที่จะเก็บไว้ในหัว หน้านี้คืออีกครึ่งของข้อตกลงนั้น: extension ที่เป็นรูปธรรมซึ่งปิดช่องว่าง แต่ละอันมี **สอนอะไร** และ **เสียบเข้ากับสิ่งที่คุณมีตรงไหน** คุณไม่ต้องการทั้งหมด และคุณแน่นอนว่าไม่ต้องการมันพร้อมกัน เลือกอันที่ตรงกับปัญหาถัดไปที่คุณมีจริง
+
+## Environments: `prod` and `staging`
+
+**สอนอะไร:** วิธีรัน platform มากกว่าหนึ่งสำเนาโดยไม่ duplicate module สักตัว — ผลตอบแทนจริงของการแยก `modules/` กับ `live/`
+
+**เสียบเข้าตรงไหน:** คุณมีหนึ่ง environment ต่อ cloud อยู่แล้ว เพิ่มมิติ environment เข้า `live/` tree — เช่น `live/{aws,gcp,azure}/{staging,prod}/` — เพื่อให้แต่ละ environment include `root.hcl` เดียวกันด้วย input ต่างกัน (node เล็กกว่าและ DB ถูกกว่าใน staging, size จริงใน prod) module ไม่เปลี่ยนเลย; เปลี่ยนแค่ Terragrunt input และ state key นี่คือ extension ที่สอนได้มากที่สุด เพราะมันคือที่ที่ architecture ที่คุณเลือกในที่สุดคุ้มค่ากับตัวเอง
+
+## Policy-as-code (OPA / Sentinel)
+
+**สอนอะไร:** วิธี enforce กฎบน infrastructure *ก่อน* มันถูก apply — ไม่มี public S3 bucket, tag บังคับ, instance type ที่อนุมัติ — แทนที่จะไปจับใน review หรือใน production
+
+**เสียบเข้าตรงไหน:** CI plan step PR workflow ของคุณ produce Terraform plan อยู่แล้ว; ป้อน plan JSON นั้นให้ [Open Policy Agent](https://www.openpolicyagent.org/) (ผ่าน `conftest`) หรือบน Terraform Cloud ให้ Sentinel แล้ว fail check เมื่อ policy ถูกละเมิด มันเป็น gate ใหม่บน pipeline เดิม ไม่ใช่ pipeline ใหม่
+
+## Secrets management (Vault / cloud KMS)
+
+**สอนอะไร:** วิธีเก็บ secret ให้พ้นจาก state และพ้นจาก Git ทั้งหมด และวิธี rotate มันโดยไม่ต้อง redeploy
+
+**เสียบเข้าตรงไหน:** วันนี้ database password ไหลผ่าน sensitive output ของ `data` module และไปลงใน Terraform state แทนที่มันด้วย secrets backend จริง — [HashiCorp Vault](https://developer.hashicorp.com/vault) หรือ KMS/Secrets Manager ของแต่ละ cloud (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault) — แล้วให้ workload อ่าน secret ตอน runtime ผ่าน workload identity ที่คุณตั้งไว้แล้ว `iam` module คือสิ่งที่ทำให้เรื่องนี้ปลอดภัย: identity ของ pod ไม่ใช่ static key คือสิ่งที่ให้ access เข้าถึง secret
+
+## Autoscaling and cost optimization
+
+**สอนอะไร:** วิธีที่ platform ดูดซับ load และสลัด cost อัตโนมัติแทนที่จะถูก size ด้วยมือ
+
+**เสียบเข้าตรงไหน:** สอง layer บน workload เพิ่ม `HorizontalPodAutoscaler` เข้า ShopMicro release เพื่อให้ pod scale ตาม CPU หรือ custom metric บน cluster เปิด node autoscaling ใน `cluster` module (managed node group / GKE autoscaling / AKS cluster autoscaler) และพิจารณา spot หรือ preemptible pool สำหรับงาน stateless จำนวน node คงที่เล็ก ๆ ที่คุณรันเป็นทางเลือกเพื่อการสอน; นี่คือวิธี size สำหรับความจริง
+
+## GitOps (Argo CD / Flux)
+
+**สอนอะไร:** ความต่างระหว่าง *push* deploy (CI รัน `helm upgrade`) กับ *pull* deploy ที่ controller ใน cluster reconcile cluster ให้ตรงกับสิ่งที่ Git บอกว่าควรเป็นอย่างต่อเนื่อง — และ self-heal drift
+
+**เสียบเข้าตรงไหน:** platform และ workload Helm release ตอนนี้ CI push มันด้วย `helm` หลัง apply แทนที่จะเป็นแบบนั้น ติดตั้ง [Argo CD](https://argo-cd.readthedocs.io/) หรือ [Flux](https://fluxcd.io/) ครั้งเดียวต่อ cluster (ส่วนเพิ่มที่เป็นธรรมชาติของ platform layer) แล้วอธิบาย ShopMicro และ platform chart เป็น `Application` / `HelmRelease` resource ที่ track ด้วย Git Terraform/Terragrunt ยัง own infrastructure ใต้ Kubernetes; GitOps รับช่วงทุกอย่าง *บน* มัน การแบ่งงานที่มีประโยชน์: IaC สำหรับ cluster, GitOps สำหรับสิ่งที่รันในมัน
+
+## Deeper SLOs and alerting
+
+**สอนอะไร:** วิธีย้ายจาก "เรามี dashboard" ไปสู่ "เรามี objective" — นิยามว่า "healthy" หมายถึงอะไรเป็นตัวเลข และถูก page เฉพาะเมื่อมันเสี่ยงจริง
+
+**เสียบเข้าตรงไหน:** Datadog module คุณ ship metric, trace, และ log อยู่แล้ว; เพิ่ม SLO (เช่น 99.9% ของ checkout request ต่ำกว่า 500 ms) และ monitor ที่ alert บน *burn rate* แทน threshold ดิบ เพื่อให้ blip สั้น ๆ ไม่ปลุกใครแต่ degradation ที่ยืดเยื้อปลุก เพราะ platform layer เป็น cloud-neutral SLO definition เดียวครอบทั้งสาม cloud เหมือนกัน
+
+## Disaster recovery and multi-region
+
+**สอนอะไร:** วิธีที่ platform รอดจากการเสีย region — property ที่ยากและแพงที่สุดที่จะเพิ่ม ซึ่งเป็นเหตุผลตรง ๆ ว่าทำไมมันถูกตัดออกจากแก่น
+
+**เสียบเข้าตรงไหน:** `network` และ `data` module บวก `live/` tree ขยาย networking ให้มากกว่าหนึ่ง region, รัน read replica หรือ cross-region backup สำหรับ managed database, และเพิ่ม `live/` region ที่สองที่ promote ได้ นี่คือที่ที่การ simplify แบบ single-region ถูกชดใช้เต็ม ๆ — และที่ที่คุณจะรู้สึกชัดที่สุดว่าทำไม multi-*region* เป็น discipline คนละแบบจาก multi-*cloud*
+
+## Where to go from here
+
+ไม่มีข้อไหนเป็น prerequisite ในการเข้าใจ CloudDeploy — คุณเข้าใจมันแล้ว มันคือทิศทางที่ platform จริงเติบโต และแต่ละอันเสียบเข้า seam ที่ architecture เปิดทิ้งไว้โดยตั้งใจ เริ่มจากอันที่ปัญหาจริงถัดไปของคุณต้องการ เพิ่มมันเป็น layer ของตัวเอง และเก็บ `plan` บนทุก PR เพื่อให้คุณเห็นการเปลี่ยนแปลงก่อนมันจะเกิดเสมอ
+
+ถ้าคุณอยากลากดูว่าทั้งระบบประกอบกันยังไงอีกครั้ง หน้า [Architecture →](/clouddeploy/th/introduction/architecture/) คือแผนที่ และ source ที่รันได้ครบสำหรับทุกอย่างในคอร์สนี้อยู่ใน repo:
+
+**[github.com/avetavos/realworld-clouddeploy →](https://github.com/avetavos/realworld-clouddeploy)**
+
+นั่นคือจุดจบของ CloudDeploy — และจุดจบของ Real-World Projects series ตอนนี้คุณ provision, observe, secure, และ tear down multi-cloud platform ทั้งหมดเป็น code ได้ และ defend ทุกการตัดสินใจที่หล่อหลอมมัน ไปสร้างอะไรสักอย่างแล้วเอามันไปวางในที่จริง

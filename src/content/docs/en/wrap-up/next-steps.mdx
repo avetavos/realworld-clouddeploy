@@ -1,0 +1,60 @@
+---
+title: Next steps
+description: "Concrete extensions that take CloudDeploy from a teachable core toward a platform you'd run for real."
+sidebar:
+  order: 2
+---
+
+The platform you built is deliberately one honest step short of production — enough to prove every pattern, small enough to keep in your head. This page is the other half of that bargain: the concrete extensions that close the gap, each with **what it teaches** and **where it plugs into what you already have**. You don't need all of them, and you certainly don't need them at once. Pick the one that matches the next problem you actually have.
+
+## Environments: `prod` and `staging`
+
+**What it teaches:** how to run more than one copy of the platform without duplicating a single module — the real payoff of the `modules/` vs `live/` split.
+
+**Where it plugs in:** you already have one environment per cloud. Add an environment dimension to the `live/` tree — for example `live/{aws,gcp,azure}/{staging,prod}/` — so each environment includes the same `root.hcl` with different inputs (smaller nodes and a cheaper DB in staging, real sizes in prod). The modules don't change at all; only the Terragrunt inputs and state keys do. This is the single most instructive extension, because it's where the architecture you chose finally earns its keep.
+
+## Policy-as-code (OPA / Sentinel)
+
+**What it teaches:** how to enforce rules on infrastructure *before* it's applied — no public S3 buckets, mandatory tags, approved instance types — instead of catching them in review or in production.
+
+**Where it plugs in:** the CI plan step. Your PR workflow already produces a Terraform plan; feed that plan JSON to [Open Policy Agent](https://www.openpolicyagent.org/) (via `conftest`) or, on Terraform Cloud, to Sentinel, and fail the check when a policy is violated. It's a new gate on the same pipeline, not a new pipeline.
+
+## Secrets management (Vault / cloud KMS)
+
+**What it teaches:** how to keep secrets out of state and out of Git entirely, and how to rotate them without a redeploy.
+
+**Where it plugs in:** today the database password flows through the `data` module's sensitive outputs and lands in Terraform state. Replace that with a real secrets backend — [HashiCorp Vault](https://developer.hashicorp.com/vault) or each cloud's KMS/Secrets Manager (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault) — and have the workload read secrets at runtime through the workload identity you already set up. The `iam` module is what makes this safe: the pod's identity, not a static key, is what grants access to the secret.
+
+## Autoscaling and cost optimization
+
+**What it teaches:** how a platform absorbs load and sheds cost automatically instead of being sized by hand.
+
+**Where it plugs in:** two layers. On the workload, add a `HorizontalPodAutoscaler` to the ShopMicro release so pods scale on CPU or custom metrics. On the cluster, enable node autoscaling in the `cluster` module (managed node group / GKE autoscaling / AKS cluster autoscaler) and consider spot or preemptible pools for stateless work. The small fixed node count you ran was a teaching choice; this is how you'd size for reality.
+
+## GitOps (Argo CD / Flux)
+
+**What it teaches:** the difference between *push* deploys (CI runs `helm upgrade`) and *pull* deploys, where an in-cluster controller continuously reconciles the cluster to what Git says it should be — and self-heals drift.
+
+**Where it plugs in:** the platform and workload Helm releases. Right now CI pushes them with `helm` after apply. Instead, install [Argo CD](https://argo-cd.readthedocs.io/) or [Flux](https://fluxcd.io/) once per cluster (a natural addition to the platform layer), then describe ShopMicro and the platform charts as Git-tracked `Application` / `HelmRelease` resources. Terraform/Terragrunt keeps owning the infrastructure below Kubernetes; GitOps takes over everything *on* it. A useful division of labor: IaC for the cluster, GitOps for what runs in it.
+
+## Deeper SLOs and alerting
+
+**What it teaches:** how to move from "we have dashboards" to "we have objectives" — defining what "healthy" means numerically and being paged only when it's genuinely at risk.
+
+**Where it plugs in:** the Datadog module. You already ship metrics, traces, and logs; add SLOs (for example 99.9% of checkout requests under 500 ms) and monitors that alert on *burn rate* rather than raw thresholds, so a brief blip doesn't wake anyone but sustained degradation does. Because the platform layer is cloud-neutral, one SLO definition covers all three clouds identically.
+
+## Disaster recovery and multi-region
+
+**What it teaches:** how a platform survives losing a region — the hardest and most expensive property to add, which is exactly why it was left out of the core.
+
+**Where it plugs in:** the `network` and `data` modules, plus the `live/` tree. Extend networking to more than one region, run a read replica or cross-region backup for the managed database, and add a second `live/` region that can be promoted. This is where the single-region simplification is repaid in full — and where you'll feel most acutely why multi-*region* is a different discipline from multi-*cloud*.
+
+## Where to go from here
+
+None of these are prerequisites for understanding CloudDeploy — you already understand it. They're the directions a real platform grows, and each one plugs into a seam the architecture left open on purpose. Start with the one your next real problem demands, add it as its own layer, and keep the `plan` on every PR so you always see the change before it happens.
+
+If you want to trace how the whole system fits together one more time, the [Architecture →](/clouddeploy/en/introduction/architecture/) page is the map. And the complete, runnable source for everything in this course lives in the repo:
+
+**[github.com/avetavos/realworld-clouddeploy →](https://github.com/avetavos/realworld-clouddeploy)**
+
+That's the end of CloudDeploy — and the end of the Real-World Projects series. You can now provision, observe, secure, and tear down a multi-cloud platform entirely as code, and defend every decision that shaped it. Go build something and put it somewhere real.
