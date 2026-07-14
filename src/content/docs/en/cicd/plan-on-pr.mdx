@@ -1,0 +1,207 @@
+---
+title: Plan on PR
+description: "A GitHub Actions workflow that runs terragrunt run --all plan on every pull request across an aws/gcp/azure matrix, authenticating with OIDC and posting the plan back to the PR."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+A pull request should answer one question before anyone approves it: **what will this change do to the three clouds?** So the first half of CI/CD is a read-only workflow that, on every PR, runs `terragrunt run --all plan` against each cloud's `live/` tree and posts the result back as a comment — one per cloud.
+
+The workflow has three moving parts:
+
+- A **matrix** over `[aws, gcp, azure]` so the same job runs three times, once per cloud, in parallel.
+- **OIDC-based cloud auth** — each job exchanges a short-lived GitHub token for cloud credentials, so there are no long-lived access keys stored in the repo.
+- A **plan-and-post** step that runs `terragrunt run --all plan` in `live/<cloud>/` and drops the output onto the PR.
+
+By the end you'll have `.github/workflows/plan.yml` that turns "trust me, it's fine" into a diff you can read.
+
+## Why
+
+`terragrunt plan` is the cheapest safety rail we have: it shows the exact set of adds, changes, and destroys **before** anything happens. On a single cloud you'd run it by hand. Across three, running it by hand is how you forget one — so we make the robot do it, the same way, every time, on every PR.
+
+Two decisions shape the design. First, the plan job is **read-only**: the IAM role it assumes can describe and read state but cannot create, modify, or destroy. A PR from a fork, or a bad merge, can never mutate infrastructure from the plan stage — the worst it can do is show you a plan. Second, we use **OIDC instead of stored keys**. GitHub mints a signed token for each run; each cloud trusts that token for a specific repo and role. Nothing long-lived sits in `Secrets` waiting to leak.
+
+## Pros & cons
+
+**One matrix job per cloud vs. one job that loops all three**
+
+- **Pros:** The matrix runs the three clouds in parallel, so a PR gets feedback in the time of the slowest single cloud, not the sum. Each cloud's plan is an isolated job with its own log, its own credentials, and its own PR comment — when AWS is red and GCP is green, that's obvious at a glance.
+- **Cons:** Three jobs means three OIDC trust relationships to set up and three sticky comments on the PR. A single looping job would be one credential and one comment, at the cost of serial runtime and a tangled log.
+
+**OIDC federation vs. long-lived access keys**
+
+- **Pros:** No secret to rotate, leak, or scope wrong. Credentials live for minutes and are bound to your repo and (optionally) the specific branch or PR. This is the current best practice on all three clouds.
+- **Cons:** More up-front wiring — an identity provider and a role/service-account per cloud, with trust conditions you have to get exactly right (`sub` claims are easy to typo). Long-lived keys are one paste into `Secrets`; OIDC is a small IAM project.
+
+## Set it up
+
+### 1. `dependency` blocks need mock outputs for plan
+
+On a fresh PR — before anything has been applied — the `cluster` unit's `dependency "network"` has no real outputs to read, and `terragrunt run --all plan` would error. The fix (verified against `/gruntwork-io/terragrunt`) is `mock_outputs` on the dependency, so `plan` has placeholder values to work with while `apply` still uses the real ones:
+
+```hcl
+# live/aws/cluster/terragrunt.hcl
+include "root" { path = find_in_parent_folders("root.hcl") }
+terraform { source = "../../../modules/aws/cluster" }
+
+dependency "network" {
+  config_path = "../network"
+
+  # Used only when network hasn't been applied yet (e.g. plan on a fresh PR).
+  # apply always uses the real outputs.
+  mock_outputs = {
+    network_id         = "vpc-mock"
+    private_subnet_ids = ["subnet-mock-a", "subnet-mock-b"]
+  }
+  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+}
+
+inputs = {
+  name       = "clouddeploy"
+  network_id = dependency.network.outputs.network_id
+  subnet_ids = dependency.network.outputs.private_subnet_ids
+  node_count = 2
+  node_size  = "small"
+}
+```
+
+Without this, a green-field plan fails on the very first PR. With it, `run --all plan` walks the whole dependency graph and shows a realistic diff.
+
+### 2. `.github/workflows/plan.yml`
+
+The workflow triggers on PRs to `main`, grants the `id-token: write` permission OIDC requires, and fans out over the cloud matrix. Each cloud has its own auth step gated by `if: matrix.cloud == '<cloud>'`, because the three auth actions are genuinely different:
+
+```yaml
+name: plan
+
+on:
+  pull_request:
+    branches: [main]
+
+# Least privilege at the workflow level.
+permissions:
+  id-token: write      # required to request the OIDC JWT
+  contents: read       # required for actions/checkout
+  pull-requests: write # required to post the plan comment
+
+jobs:
+  plan:
+    name: plan (${{ matrix.cloud }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false            # one cloud failing shouldn't hide the others
+      matrix:
+        cloud: [aws, gcp, azure]
+    steps:
+      - uses: actions/checkout@v6
+
+      # --- OIDC cloud auth: one step per cloud, read-only role ---
+      - name: Auth to AWS
+        if: matrix.cloud == 'aws'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}   # read-only role
+          aws-region: us-east-1
+
+      - name: Auth to GCP
+        if: matrix.cloud == 'gcp'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PLAN_SA }}          # read-only SA
+
+      - name: Auth to Azure
+        if: matrix.cloud == 'azure'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # --- Tooling ---
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false   # let Terragrunt drive Terraform directly
+
+      - name: Install Terragrunt
+        run: |
+          curl -sSL -o /usr/local/bin/terragrunt \
+            https://github.com/gruntwork-io/terragrunt/releases/download/v0.67.4/terragrunt_linux_amd64
+          chmod +x /usr/local/bin/terragrunt
+          terragrunt --version
+
+      # --- Plan the whole live/<cloud> tree ---
+      - name: terragrunt run --all plan
+        id: plan
+        working-directory: live/${{ matrix.cloud }}
+        run: |
+          {
+            echo '### Terragrunt plan — `'"${{ matrix.cloud }}"'`'
+            echo ''
+            echo '```'
+            terragrunt run --all plan --terragrunt-non-interactive 2>&1 | tail -n 300
+            echo '```'
+          } > plan.md
+
+      - name: Post plan to the PR
+        if: always()   # post even when the plan errors, so reviewers see why
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: plan-${{ matrix.cloud }}   # one sticky comment per cloud, updated on re-push
+          path: live/${{ matrix.cloud }}/plan.md
+```
+
+Two things worth calling out. `fail-fast: false` keeps a red AWS from cancelling the GCP and Azure jobs — you want all three plans on a PR, not the first failure. And the sticky comment's per-cloud `header` means each new push **updates** the same three comments instead of burying the PR in a new wall of plan output every time.
+
+### 3. Pin the tool versions
+
+CI drift is real: an unpinned Terragrunt or Terraform can turn "no changes" into a surprise diff overnight. Pin the Terragrunt release in the install step (above) and the provider versions in your `required_providers` blocks, and bump them deliberately in their own PRs — where this very workflow will show you the blast radius before you merge.
+
+A note on syntax: `terragrunt run --all plan` is the current spelling (the old `terragrunt run-all plan` still works but is deprecated). CloudDeploy uses `run --all` throughout; both forms drive the same dependency-ordered plan.
+
+## Verify
+
+Locally, reproduce exactly what CI does — plan the whole AWS tree:
+
+```bash
+cd live/aws
+terragrunt run --all plan --terragrunt-non-interactive
+```
+
+Expected output: Terragrunt reports the run order (dependencies first), plans each unit, and warns where it fell back to mock outputs:
+
+```
+INFO   The stack at . will be processed in the following order for command plan:
+Group 1
+- Module ./network
+Group 2
+- Module ./cluster
+- Module ./data
+Group 3
+- Module ./iam
+- Module ./platform
+Group 4
+- Module ./shopmicro
+
+WARN   [cluster] Config ./network is a dependency that has no outputs,
+       but mock outputs provided and returning those in dependency output.
+...
+Plan: 34 to add, 0 to change, 0 to destroy.
+```
+
+Then open a **draft PR** with a trivial change (bump `node_count` on one cloud) and watch the Actions tab: three `plan (aws|gcp|azure)` jobs run in parallel, and within a minute or two three sticky comments appear on the PR — each a fenced `terragrunt run --all plan` for that cloud, with the changed unit showing `~ node_count = 2 -> 3`. That diff, on the PR, before merge, is the whole point.
+
+## Check your understanding
+
+1. Why does the plan job assume a **read-only** role, and what class of accident does that prevent?
+2. On a green-field PR, `terragrunt run --all plan` would error on the `cluster` unit. Why — and what makes `mock_outputs` the right fix rather than applying `network` first?
+3. What does `fail-fast: false` change about how the three cloud jobs behave when one of them fails?
+4. Name two things OIDC federation gives you that a long-lived access key stored in `Secrets` does not.
+
+## Recap
+
+You now have a PR gate that plans all three clouds the same way, every time: a matrix over `[aws, gcp, azure]`, OIDC auth to a read-only role per cloud, `terragrunt run --all plan` over each `live/` tree, and the plan posted back as a per-cloud sticky comment. The `mock_outputs` on your `dependency` blocks (set up back in [Terragrunt & Remote State](/clouddeploy/en/terragrunt/)) are what let a green-field plan succeed, and the same `live/` units that [deploy ShopMicro](/clouddeploy/en/deploy-shopmicro/) are what the plan walks.
+
+A plan you can read is only half the pipeline. Next, we turn a merge into a real change: [Apply and Deploy →](/clouddeploy/en/cicd/apply-and-deploy/), where `terragrunt run --all apply` provisions the infrastructure and rolls out the Helm releases — behind an approval gate.

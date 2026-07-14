@@ -1,0 +1,169 @@
+---
+title: Apply and Deploy
+description: "On merge to main, terragrunt run --all apply provisions each cloud and rolls out the Helm releases — gated by GitHub Environments with required approvals, with secrets injected safely."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The plan workflow tells you what *will* happen. This one makes it happen. On a merge to `main`, a second workflow runs `terragrunt run --all apply` against each cloud's `live/` tree — and because the platform layer (Datadog, Keycloak, GrowthBook) and ShopMicro are themselves `helm_release` units in that tree, **the same apply that provisions the VPC, cluster, and database also rolls out the Helm releases**, in dependency order, in one pass.
+
+We wrap that apply in three protections:
+
+- A **GitHub Environment per cloud** with **required reviewers**, so an apply pauses for a human to approve before it touches anything.
+- An **OIDC apply role** — separate from, and more privileged than, the read-only plan role from the last lesson.
+- **Secrets** (the Datadog API key, DB passwords, the Keycloak admin) injected as `TF_VAR_*` environment variables scoped to the environment, never printed, never committed.
+
+By the end you'll have `.github/workflows/apply.yml`: merge, approve, and the platform reconciles itself across three clouds.
+
+## Why
+
+Apply-on-merge makes the git repo the single source of truth: the state of the three clouds is whatever `main` says it is, reconciled automatically. That's the payoff of putting *everything* — network, cluster, data, IAM, platform Helm, and ShopMicro — into the Terragrunt dependency graph. `run --all apply` walks that graph so the database exists before ShopMicro's `helm_release` reads its connection string, and the cluster exists before Datadog's agent lands on it. No "apply the infra, then remember to run Helm" second step to forget.
+
+But apply is not plan. It creates, changes, and destroys real, billable resources, and a bad merge can take the platform down. So the design is deliberately **slower on purpose**: an approval gate stands between merge and mutation, and the credentials that can mutate live only inside that gated environment. You trade a few seconds of "click approve" for the guarantee that no apply ever runs unwatched.
+
+## Pros & cons
+
+**Apply through the Terragrunt graph vs. a separate `helm upgrade` step**
+
+- **Pros:** One command, one dependency order, one source of truth. The database's `db_password` output flows straight into ShopMicro's `helm_release` values without a human copying it; Datadog can't deploy before its cluster exists. Rollback is "revert the PR and re-apply."
+- **Cons:** Helm rollouts are now coupled to Terraform state — a flaky chart install shows up as a `terragrunt apply` failure, and you reason about app deploys and infra in the same place. Teams that want to ship app changes ten times a day, decoupled from infra, often split ShopMicro into its own CD pipeline (Argo/Flux) — noted in [Wrap-up](/clouddeploy/en/wrap-up/).
+
+**Required-reviewer environments vs. fully automatic apply**
+
+- **Pros:** A human sees the merged plan and clicks approve before anything changes; the environment scopes its secrets and its apply role so they only exist during an approved deployment. This is the standard guardrail for production.
+- **Cons:** It's not continuous deployment — every merge waits on a person, which is friction you feel at 2am. For a low-stakes environment you might drop the gate; for three production clusters, the friction is the feature.
+
+## Set it up
+
+### 1. GitHub Environments with required reviewers
+
+In the repo's **Settings → Environments**, create one environment per cloud — `aws-production`, `gcp-production`, `azure-production`. On each, enable **Required reviewers** (add yourself or the infra team; up to six users/teams, and only one must approve). Store that cloud's secrets *on the environment*, not on the repo — so they're only readable by a job that names the environment, and only after approval:
+
+- `aws-production`: `DATADOG_API_KEY`, `KEYCLOAK_ADMIN_PASSWORD`
+- ...and the same for `gcp-production` and `azure-production`.
+
+The OIDC role/SA identifiers (which are not secrets) live in environment **variables**: `AWS_APPLY_ROLE_ARN`, `GCP_WIF_PROVIDER`, `GCP_APPLY_SA`, `AZURE_CLIENT_ID`, and so on. The apply role is the read-write counterpart to the plan role — it can create and destroy; scope it as tightly as the platform allows (this is the least-privilege work from [Identity & IAM](/clouddeploy/en/iam/)).
+
+### 2. `.github/workflows/apply.yml`
+
+The workflow triggers on push to `main`, names the per-cloud environment (which is what triggers the approval prompt), and pins a `concurrency` group so two applies to the same cloud can never overlap:
+
+```yaml
+name: apply
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write   # OIDC JWT
+  contents: read
+
+jobs:
+  apply:
+    name: apply (${{ matrix.cloud }})
+    runs-on: ubuntu-latest
+    # Naming the environment is what makes the job wait for a required reviewer.
+    environment: ${{ matrix.cloud }}-production
+    # Never let two applies to the same cloud run at once; never cancel one mid-apply.
+    concurrency:
+      group: apply-${{ matrix.cloud }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: [aws, gcp, azure]
+    # Secrets scoped to the environment, exposed only as Terraform vars.
+    env:
+      TF_VAR_datadog_api_key:        ${{ secrets.DATADOG_API_KEY }}
+      TF_VAR_keycloak_admin_password: ${{ secrets.KEYCLOAK_ADMIN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Auth to AWS
+        if: matrix.cloud == 'aws'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}   # read-write role
+          aws-region: us-east-1
+
+      - name: Auth to GCP
+        if: matrix.cloud == 'gcp'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_APPLY_SA }}
+
+      - name: Auth to Azure
+        if: matrix.cloud == 'azure'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          curl -sSL -o /usr/local/bin/terragrunt \
+            https://github.com/gruntwork-io/terragrunt/releases/download/v0.67.4/terragrunt_linux_amd64
+          chmod +x /usr/local/bin/terragrunt
+
+      # Provisions infra AND rolls out the Helm releases, in dependency order.
+      - name: terragrunt run --all apply
+        working-directory: live/${{ matrix.cloud }}
+        run: terragrunt run --all apply --terragrunt-non-interactive
+```
+
+The apply reads real dependency outputs (not the mock outputs from the plan lesson): `terragrunt run --all apply` waits for `network` before `cluster`, for `cluster` + `data` before `platform` and `shopmicro`, and wires `data`'s sensitive `db_password` output straight into ShopMicro's chart values without it ever appearing in a log.
+
+### 3. Secrets handling
+
+Three rules keep credentials out of trouble:
+
+1. **Environment-scoped, not repo-scoped.** Secrets live on `aws-production` etc., so only an approved job for that cloud can read them.
+2. **Injected as `TF_VAR_*`, consumed as `sensitive` variables.** Declare the matching Terraform variables `sensitive = true` so Terraform redacts them in plan/apply output and in state diffs.
+3. **The best secret is the one GitHub never holds.** For anything the cluster itself can fetch — a DB password, a Datadog key — prefer having the workload pull it from the cloud's secret manager (AWS Secrets Manager / GCP Secret Manager / Azure Key Vault) via the workload identity from [Identity & IAM](/clouddeploy/en/iam/), so the value never round-trips through CI at all.
+
+## Verify
+
+Merge a PR that changes one cloud (say, bump ShopMicro's replica count in `live/aws/shopmicro`). In the Actions tab the `apply (aws)` job starts and immediately **pauses**: "Waiting for review." Approve it. The apply then runs `terragrunt run --all apply`, and you'll see it reconcile in dependency order — infra first, then the Helm releases.
+
+Once it's green, confirm the workload and platform are actually live on the cluster it just touched:
+
+```bash
+aws eks update-kubeconfig --name clouddeploy --region us-east-1
+kubectl get pods -n shopmicro
+kubectl get pods -n platform
+```
+
+Expected output: ShopMicro's pods `Running`, and the platform namespace showing the Datadog agent, Keycloak, and GrowthBook — the same `helm_release`s the apply just rolled out:
+
+```
+NAMESPACE   NAME                             READY   STATUS    RESTARTS   AGE
+shopmicro   shopmicro-gateway-7c9f...        1/1     Running   0          2m
+shopmicro   shopmicro-web-5b8d...            1/1     Running   0          2m
+platform    datadog-agent-abcde              1/1     Running   0          3m
+platform    keycloak-0                       1/1     Running   0          3m
+platform    growthbook-6f7a...               1/1     Running   0          3m
+```
+
+Three pods `Running` that a `terragrunt run --all apply` put there — infra and app deployed by one gated, approved command.
+
+## Check your understanding
+
+1. Why does naming a GitHub Environment on the job cause the apply to wait, and what would happen to the approval gate if you removed the `environment:` key?
+2. `run --all apply` deploys both the RDS database and ShopMicro's Helm release. Why must Terragrunt apply them in that order, and how does ShopMicro get the DB password without a human copying it?
+3. What does `concurrency` with `cancel-in-progress: false` protect against on the apply workflow specifically?
+4. Give the strongest version of secrets handling here — the one where GitHub never stores the Datadog key at all. How does that work?
+
+## Recap
+
+Merge-to-main is now a real deployment: `terragrunt run --all apply` over each cloud's `live/` tree provisions the infrastructure *and* rolls out the Datadog / Keycloak / GrowthBook / ShopMicro Helm releases in one dependency-ordered pass — behind a GitHub Environment with required reviewers, using a read-write OIDC apply role, with secrets scoped to the environment and marked sensitive. Plan-on-PR shows the diff; apply-on-merge makes it real.
+
+You can now change three clouds from a pull request. The last question is what it's like to *run* that platform day to day — state, drift, cost, and how to tear it all down. That's the next module: [Multi-cloud in Practice →](/clouddeploy/en/multi-cloud/).
