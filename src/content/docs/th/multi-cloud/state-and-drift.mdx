@@ -1,0 +1,175 @@
+---
+title: State and Drift
+description: "จัดการ remote state ข้ามสาม cloud และใช้ terragrunt run --all plan — แบบตั้งเวลา — เป็น drift check ที่จับการเปลี่ยนผ่าน console ได้ก่อนมันจะกัด"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+สาม cloud หมายถึงสาม remote state backend และสามจุดที่ความจริงจะค่อย ๆ แยกออกจาก code ของคุณได้เงียบ ๆ บทนี้ทำสองอย่าง:
+
+- **ทบทวน layout ของ remote state** — แต่ละตัว `live/aws`, `live/gcp`, และ `live/azure` เก็บ state ที่ lock ของตัวเองไว้ใน backend ของ cloud ตัวเอง และทำไม separation นั้นถึงสำคัญตอนที่ job หรือเพื่อนร่วมทีมกำลัง apply อยู่ที่อื่น
+- **เปลี่ยน `terragrunt run --all plan` ให้เป็น drift detector** — workflow แบบตั้งเวลาที่ plan ทั้งสาม cloud ตาม cron และร้องเตือนเมื่อ plan กลับมาไม่ว่างเปล่า เพราะ plan ที่ไม่ว่างบน repo ที่ไม่มีการเปลี่ยนแปลง แปลว่ามีคนไปเปลี่ยนอะไรบางอย่างนอกช่องทาง
+
+ประเด็นคือเราสร้าง drift detector ไว้แล้วตั้งแต่ module ที่แล้ว `plan` ที่ควรบอกว่า "no changes" แต่ไม่บอก *คือ* สัญญาณ drift อยู่แล้ว — เราแค่ต้องรันมันตามตารางเวลาและอ่าน exit code
+
+## Why
+
+State คือ source of truth ของสิ่งที่ Terraform เชื่อว่ามีอยู่จริง drift คือช่องว่างระหว่างความเชื่อนั้นกับสิ่งที่กำลังรันจริง — security group ที่ถูกขยายด้วยมือระหว่าง incident, node pool ที่ถูก resize ใน console "แค่ชั่วคราว," พารามิเตอร์ของ managed DB ที่ทีมอื่นไปขยับ บน cloud เดียว drift เป็นเรื่องน่ารำคาญ บนสาม cloud มันคือ surface สามเท่าและสาม console ที่ไม่มีใครเฝ้า
+
+คุณป้องกัน drift ทั้งหมดไม่ได้ — บางทีการ hotfix ตอนตีสองผ่าน console ก็เป็นทางเลือกที่ถูก สิ่งที่คุณ *ทำได้* คือ **detect มันให้เร็วและตัดสินใจอย่างจงใจ**: ไม่ก็ดึงการเปลี่ยนแปลงกลับเข้า code (เพื่อให้มันรอดจากการ apply ครั้งถัดไป) หรือปล่อยให้ apply ครั้งถัดไป revert มัน (เพราะ code คือความจริง) เครื่องมือสำหรับ detect คือ plan ที่คุณเชื่อใจอยู่แล้ว รันบน timer อ่าน `-detailed-exitcode` เพื่อให้เครื่องแยก "no changes" ออกจาก "มีอะไรขยับ" ได้
+
+## Pros & cons
+
+**State ต่อ cloud ใน backend ของ cloud ตัวเอง เทียบกับ central backend ตัวเดียวสำหรับทั้งสาม**
+
+- **Pros:** State ของแต่ละ cloud อยู่ในที่ที่ credential ของ cloud นั้นเข้าถึงได้อยู่แล้ว — S3 + DynamoDB lock สำหรับ AWS, GCS สำหรับ GCP, Azure Storage container สำหรับ Azure การ outage เต็ม ๆ ของ cloud หนึ่งไม่ทำให้คุณ operate อีกสองตัวไม่ได้ และ locking ของแต่ละ backend เป็นแบบ native และผ่านสนามรบมาแล้ว
+- **Cons:** สาม backend ที่ต้อง bootstrap, back up, และ secure พร้อม access control สามชุด central backend ตัวเดียว (เช่นทุกอย่างใน S3 bucket เดียว) เป็นสิ่งเดียวที่ต้องปกป้อง — โดยแลกกับการผูก state ของทั้งสาม cloud ไว้กับ availability และ blast radius ของ cloud เดียว
+
+**Scheduled drift plan เทียบกับ plan เฉพาะตอน PR**
+
+- **Pros:** การเปลี่ยนแปลงนอกช่องทางไม่ต้องรอให้ใครเปิด PR ถึงจะถูกสังเกต — nightly plan เผยมันในเช้าวันถัดไปพร้อม diff ที่แม่นยำ drift ที่จับได้ในหนึ่งวันคือ comment; drift ที่จับได้ในหนึ่งเดือนคือ incident
+- **Cons:** `run --all plan` แบบตั้งเวลากิน CI minute และ read API call ทุกคืนบนสาม cloud และ environment ที่มี noise (สิ่งที่เปลี่ยนเองอย่างชอบธรรม) อาจฝึกให้คนเพิกเฉยต่อ alert คุณปรับ schedule และ scope เพื่อให้ signal ยังคม
+
+## Set it up
+
+### 1. Remote state, recapped per cloud
+
+แต่ละ `root.hcl` ประกาศ backend ของ cloud ตัวเอง (จาก [Terragrunt & Remote State](/clouddeploy/th/terragrunt/)) รูปร่างเหมือนกันหมด; ต่างแค่ backend และ locking ของมัน:
+
+```hcl
+# live/aws/root.hcl — S3 state, DynamoDB lock
+remote_state {
+  backend  = "s3"
+  generate = { path = "backend.tf", if_exists = "overwrite_terragrunt" }
+  config = {
+    bucket         = "clouddeploy-tfstate-aws"
+    key            = "${path_relative_to_include()}/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "clouddeploy-locks"   # lock table
+  }
+}
+```
+
+```hcl
+# live/gcp/root.hcl — GCS state (locking is built into the GCS backend)
+remote_state {
+  backend  = "gcs"
+  generate = { path = "backend.tf", if_exists = "overwrite_terragrunt" }
+  config = {
+    bucket = "clouddeploy-tfstate-gcp"
+    prefix = "${path_relative_to_include()}"
+  }
+}
+```
+
+```hcl
+# live/azure/root.hcl — Azure Storage state (blob lease provides locking)
+remote_state {
+  backend  = "azurerm"
+  generate = { path = "backend.tf", if_exists = "overwrite_terragrunt" }
+  config = {
+    resource_group_name  = "clouddeploy-tfstate"
+    storage_account_name = "clouddeploytfstate"
+    container_name       = "tfstate"
+    key                  = "${path_relative_to_include()}/terraform.tfstate"
+  }
+}
+```
+
+`path_relative_to_include()` ให้ทุก unit มี state key ของตัวเองภายใต้ backend เดียวกัน ดังนั้น `network`, `cluster`, `data`, `platform`, และ `shopmicro` ไม่เคยแชร์ state file กัน — การ lock การ apply ของ unit หนึ่งไม่ block อีก unit
+
+### 2. A scheduled drift-detection workflow
+
+`terragrunt run --all plan` กับ `-detailed-exitcode` ของ Terraform คืนค่า **0** สำหรับ "no changes," **2** สำหรับ "มี changes," และ **1** สำหรับ error จริง scheduled workflow รันมันต่อ cloud และ fail job เมื่อ exit code เป็น 2 — ซึ่งบน `main` ที่ไม่มีการเปลี่ยนแปลง แปลว่า drift:
+
+```yaml
+name: drift
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch: {}    # allow a manual run
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  drift:
+    name: drift (${{ matrix.cloud }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: [aws, gcp, azure]
+    steps:
+      - uses: actions/checkout@v6
+
+      # ... the same per-cloud OIDC auth + tooling steps as plan.yml,
+      #     using the READ-ONLY plan role (drift detection never applies) ...
+
+      - name: Detect drift
+        working-directory: live/${{ matrix.cloud }}
+        run: |
+          # -detailed-exitcode: 0 = no changes, 2 = drift, 1 = error
+          terragrunt run --all plan \
+            --terragrunt-non-interactive \
+            -- -detailed-exitcode
+```
+
+เพราะ plan role เป็น read-only job นี้จึง *ไม่มีทาง* แก้ drift โดยบังเอิญ — มันแค่รายงาน ต่อสาย failure ไปที่ที่ทีมของคุณดู (Slack notify step, GitHub issue, email) เพื่อให้ `drift (gcp)` สีแดงเป็นไปไม่ได้ที่จะพลาด
+
+### 3. Handling drift once you've found it
+
+drift plan ที่ไม่ว่างเปล่าคือการตัดสินใจ ไม่ใช่เหตุฉุกเฉิน อ่าน diff แล้วเลือกหนึ่ง:
+
+- **Code is truth → let apply revert it.** ถ้าการเปลี่ยนนอกช่องทางผิดหรือชั่วคราว อย่า merge อะไร; `run --all apply` ครั้งถัดไป (จาก [apply workflow](/clouddeploy/th/cicd/apply-and-deploy/)) จะดึงความจริงกลับไปเป็นสิ่งที่ code บอก นี่คือ default และเป็นเหตุผลว่าทำไม infra ที่นิยามด้วย code ถึงคุ้มค่ากับความยุ่งยาก
+- **The change was right → fold it into code.** ถ้าการเปลี่ยนใน console ควรอยู่ต่อ (node size ที่ดีกว่าจริง ๆ) อัปเดต module/inputs ให้ code ตรงกัน เปิด PR แล้วให้ plan-on-PR ยืนยันว่าตอนนี้มันแสดง no changes ความจริงกับ code re-converge กัน และมันรอดจากการ apply ครั้งถัดไป
+- **Terraform lost track of a real resource → import it.** ถ้าอะไรบางอย่างมีอยู่แต่ไม่อยู่ใน state (สร้างด้วยมือ) `terragrunt import` มันเข้า unit ที่ถูกต้องเพื่อให้มันถูก manage อีกครั้ง แทนที่จะให้ Terraform พยายามสร้างตัวซ้ำ
+
+## Verify
+
+ยืนยัน clean baseline ก่อน — `main` ที่ไม่มีการเปลี่ยนแปลงควร plan ออกมาเป็นศูนย์:
+
+```bash
+cd live/aws
+terragrunt run --all plan --terragrunt-non-interactive -- -detailed-exitcode
+echo "exit code: $?"
+```
+
+คาดหวังบน platform ที่สะอาด:
+
+```
+...
+No changes. Your infrastructure matches the configuration.
+exit code: 0
+```
+
+ทีนี้จำลอง drift: ใน AWS console เพิ่ม desired size ของ EKS node group จาก 2 เป็น 3 (หรือ resize node pool) — แล้วรันคำสั่งเดิมอีกครั้ง plan จะรายงานช่องว่างและ exit code พลิก:
+
+```
+  # module.cluster ... will be updated in-place
+  ~ scaling_config {
+      ~ desired_size = 3 -> 2
+    }
+Plan: 0 to add, 1 to change, 0 to destroy.
+exit code: 2
+```
+
+exit code `2` บน repo ที่ไม่มีการเปลี่ยนแปลงคือ drift ที่จับได้ revert การเปลี่ยนใน console (หรือ fold มันเข้า code) แล้วยืนยันว่า plan ว่างเปล่าและ exit code กลับมาเป็น `0`
+
+## ตรวจสอบความเข้าใจ
+
+1. ทำไมแต่ละ cloud ถึงเก็บ state backend ของตัวเองแทนที่จะชี้ `live/` ทั้งสาม tree ไปที่ bucket เดียว? separation นั้นให้อะไรคุณระหว่างที่ cloud หนึ่ง outage?
+2. exit code 0, 1, และ 2 จาก `plan -detailed-exitcode` หมายถึงอะไร และทำไมมันถึงเป็นกุญแจที่เปลี่ยน plan ให้เป็น drift check อัตโนมัติ?
+3. มีคนขยาย security group ใน AWS console ระหว่าง incident เดินผ่านสองวิธีที่ชอบธรรมในการแก้ drift ที่เกิดขึ้น และคุณจะเลือกแต่ละวิธีเมื่อไหร่
+4. ทำไมมันถึงสำคัญที่ drift workflow ใช้ **read-only** plan role แทน apply role?
+
+## Recap
+
+State คือ source of truth และ drift คือช่องว่างระหว่างมันกับความจริง — สามเท่าบนสาม cloud คุณเก็บ state ของแต่ละ cloud ให้ lock อยู่ใน backend ของตัวเอง และคุณจับ drift ด้วย plan ที่คุณเชื่อใจอยู่แล้ว: `terragrunt run --all plan -detailed-exitcode` บน nightly schedule, read-only, exit code 2 หมายถึง "มีอะไรขยับ" ตอนมันยิง คุณตัดสินใจอย่างจงใจ — ปล่อยให้ apply revert มัน, fold มันเข้า code, หรือ import สิ่งที่หลุดออกจาก state
+
+การ detect drift ทำให้ platform ซื่อสัตย์ อีกสิ่งที่การรันสาม cluster ทำคือกินเงิน — บทสุดท้ายจึงเป็นเรื่องการรู้ว่าคุณจ่ายอะไรอยู่ tag และ budget สำหรับมัน และ tear down ทั้งหมดอย่างสะอาดเมื่อคุณเสร็จ: [Cost and Teardown →](/clouddeploy/th/multi-cloud/cost-and-teardown/)

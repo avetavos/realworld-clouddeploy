@@ -1,0 +1,162 @@
+---
+title: Cost and Teardown
+description: "สาม cluster และสาม managed database มี cost จริงเท่าไหร่ ทำให้มันมองเห็นด้วย tag และ budget และ terragrunt run --all destroy ที่สะอาดต่อ cloud — พร้อม trade-off ที่ตรงไปตรงมาของการทำ multi-cloud"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+ทุกอย่างจนถึงตอนนี้เพิ่ม resource บทนี้เกี่ยวกับมิเตอร์ที่มันหมุนและวิธีปิดมัน สามส่วน:
+
+- **cost model** — ตัวเลขคร่าว ๆ แบบซื่อสัตย์ว่า CloudDeploy มี cost ต่อเดือนเท่าไหร่: สาม managed control plane, สามชุด worker node, สาม managed Postgres instance, สาม load balancer, บวก state และ egress
+- **ทำให้มันมองเห็น** — tag/label บนทุก resource เพื่อให้ spend attribute ได้ต่อ cloud และต่อ project และ **budget พร้อม alert** บนแต่ละ cloud เพื่อให้ resource ที่หลุดควบคุม ping คุณก่อนใบแจ้งหนี้จะมา
+- **teardown ที่สะอาด** — `terragrunt run --all destroy` ต่อ cloud ในลำดับที่ถูกต้อง บวก resource ที่ *ไม่* หายไปเอง และจะยัง charge คุณต่อถ้าคุณลืมมัน
+
+และสุดท้าย ส่วนที่คอร์สติดค้างคุณอยู่: **trade-off ที่ตรงไปตรงมา** ของการสร้างสิ่งนี้บนสาม cloud แทนที่จะเป็น cloud เดียว
+
+## Why
+
+multi-cloud capstone ที่คุณปล่อยรันทิ้งไว้คือวิธีพิสูจน์ประเด็นที่แพง ทักษะไม่ใช่แค่การตั้ง platform ขึ้นมา — แต่คือการรู้ว่ามัน cost เท่าไหร่ตอนที่มันรัน เห็น cost นั้นแยกย่อยเพื่อให้คุณ reason เกี่ยวกับมันได้ และสามารถเอามันลงได้ *ทั้งหมด* ด้วยความมั่นใจว่าไม่มีอะไรถูกทิ้งให้ bill อยู่เงียบ ๆ load balancer ที่ถูกทิ้งและ disk ที่ไม่ถูกลบคือรายการคลาสสิกของ "นึกว่า destroy ไปแล้ว"; วินัยตรงนี้คือการทำให้ teardown เชื่อถือได้เท่ากับ apply
+
+why ที่ใหญ่กว่าคือความซื่อสัตย์ทางปัญญา "เรารันบนสาม cloud" ฟังดูน่าประทับใจ และโครงสร้าง DRY Terragrunt ทำให้มัน *จัดการได้* — แต่มันไม่ฟรี และมันไม่ลึกต่อ cloud เท่า single-cloud build การเรียกชื่อ trade นั้นตรง ๆ คือความต่างระหว่าง portfolio piece กับ cargo cult
+
+## Pros & cons
+
+**Managed ทุกอย่าง (EKS/GKE/AKS + RDS/Cloud SQL/Azure DB) เทียบกับ self-hosting บน VM เปล่า**
+
+- **Pros:** managed control plane, patching, และ backup คือสิ่งที่ทำให้คนเดียวรัน platform รูปทรง production บนสาม cloud ได้เลย คุณจ่ายค่า control-plane hour และ managed-DB instance แล้วได้เวลาคืนมา
+- **Cons:** สาม managed control plane บวกสาม managed database คือส่วนใหญ่ของ bill และเป็นพื้นที่คุณจ่ายแม้ตอน cluster idle self-hosting บน VM ถูกกว่าตอนพักและเป็นงานมากกว่ามาก — trade ที่ผิดสำหรับ teaching platform, trade ที่ถูกที่จะ *รู้* ว่ามีอยู่
+
+**Destroy ตอน idle เทียบกับปล่อย platform รัน**
+
+- **Pros:** `run --all destroy` ต่อ cloud ลด spend เหลือแทบไม่มีอะไร (แค่ state storage) และเพราะทั้ง platform อยู่ใน code `run --all apply` เอามันกลับมา byte-for-byte เมื่อคุณต้องการ สำหรับคอร์สหรือ demo destroy-ตอน-idle คือ default ที่ถูก
+- **Cons:** cold rebuild กินเวลาจริง (cluster และ DB สร้างช้า) และอะไรก็ตามที่อยู่แค่ใน cluster — data ใน DB ของ ShopMicro, Keycloak user ที่สร้างด้วยมือ — หายไปเว้นแต่คุณ export มัน persistent environment เลี่ยงเรื่องนั้นโดยแลกกับการจ่ายเงินเพื่อเปิดมันทิ้งไว้
+
+## Set it up
+
+### 1. Tag and label everything
+
+attribution เริ่มที่ provisioning ตั้ง default tag/label ที่ระดับ provider เพื่อให้ทุก resource ใน cloud พก มันไว้ และ cost tool slice ได้ตาม project และ cloud AWS ใช้ `default_tags` บน provider; GCP ใช้ resource `labels`; Azure ใช้ resource `tags`:
+
+```hcl
+# generated per cloud from root.hcl — AWS example
+provider "aws" {
+  region = "us-east-1"
+  default_tags {
+    tags = {
+      project = "clouddeploy"
+      cloud   = "aws"
+      managed = "terragrunt"
+    }
+  }
+}
+```
+
+ด้วย tag ที่สม่ำเสมอ cost explorer ของแต่ละ cloud (AWS Cost Explorer, billing report ของ GCP, Azure Cost Management) ตอบ "CloudDeploy cost ฉันเท่าไหร่บน cloud นี้" ได้ใน filter เดียว
+
+### 2. A budget with alerts, per cloud
+
+budget ไม่หยุด spend แต่มันเปลี่ยนใบแจ้งหนี้ที่ทำให้ตกใจให้เป็นสัญญาณเตือนล่วงหน้า นิยามหนึ่งตัวต่อ cloud ใน Terraform — `aws_budgets_budget`, `google_billing_budget`, `azurerm_consumption_budget_subscription` — แต่ละตัวมี limit รายเดือนและ alert threshold (เช่น 50% / 80% / 100%) ที่ email หรือ page คุณ:
+
+```hcl
+# modules/aws/... — an AWS monthly cost budget with alerts
+resource "aws_budgets_budget" "clouddeploy" {
+  name         = "clouddeploy-monthly"
+  budget_type  = "COST"
+  limit_amount = "300"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = ["you@example.com"]
+  }
+}
+```
+
+สาม budget, สาม threshold — เพื่อให้ load balancer ที่ค้างหรือ node pool ที่ใหญ่เกินประกาศตัวเองตอนที่มันยังเป็นเศษปัดเศษ
+
+### 3. A clean `terragrunt run --all destroy` per cloud
+
+teardown คือ apply ย้อนกลับ `terragrunt run --all destroy` เดิน dependency graph **ถอยหลัง** — ShopMicro และ platform Helm release ก่อน, จากนั้น IAM, จากนั้น cluster และ data, จากนั้น network ท้ายสุด — เพื่อให้ไม่มีอะไรถูก destroy ขณะที่ยังมีอะไรพึ่งมันอยู่:
+
+```bash
+cd live/aws
+terragrunt run --all destroy --terragrunt-non-interactive
+```
+
+ทำแบบนี้ต่อ cloud (`live/aws`, `live/gcp`, `live/azure`) บางสิ่ง **ไม่** หายไปกับ graph และจะยัง charge คุณต่อถ้าคุณลืมมัน:
+
+- **Cloud load balancer ที่สร้างโดย Kubernetes `Service type=LoadBalancer` / ingress**, ไม่ใช่โดย Terraform destroy Helm release (หรือ `kubectl delete` ingress) *ก่อน* cluster เพื่อให้ cloud LB ถูกปล่อย; LB ที่ค้างอยู่รอด cluster ของมันและ bill ต่อ
+- **Persistent volume / managed disk** ที่ back StatefulSet (Keycloak, datastore ของ GrowthBook) เช็กว่ามันถูก reclaim
+- **State backend เอง** — S3/GCS/Azure Storage bucket และ DynamoDB lock table พวกนี้ตั้งใจ *ไม่* อยู่ใน graph ของ `live/` (มันจะเป็น chicken-and-egg) ดังนั้นมันรอด `run --all destroy` ลบมันด้วยมือเมื่อคุณเสร็จจริง ๆ เท่านั้น และหลังจากยืนยันว่า state ว่างเปล่าแล้ว
+
+ลำดับสำคัญ: tear workload และ platform ลงก่อน (ปล่อย cloud LB และ disk), จากนั้น infrastructure, จากนั้น — อย่างจงใจ, ท้ายสุด, ด้วยมือ — state backend
+
+### 4. The honest multi-cloud trade-offs
+
+การสร้างบนสาม cloud ซื้ออะไรมาจริง ๆ และ cost อะไร:
+
+- **DRY, ไม่ใช่ฟรี** Terragrunt กันไม่ให้ config ถูก triplicate แต่ยังมีสาม IAM model, สาม ingress/LB behavior, และสาม managed-DB quirk ที่ต่างกันจริง — module interface ที่สม่ำเสมอซ่อนมันจาก `live/` wiring, ไม่ใช่จากคุณ
+- **กว้าง, ไม่ใช่ลึก** หนึ่ง region และหนึ่ง environment ต่อ cloud พอที่จะ demonstrate portability; มัน *ไม่ใช่* production single-cloud build ที่มี multi-region, ความลึกของ autoscaling, และ tuning ต่อ cloud single-cloud course จะลงลึกในที่ที่บทนี้ไปกว้าง
+- **cost floor 3 เท่า** สาม control plane และสาม managed DB คือขั้นต่ำรายเดือนจริงที่คุณจ่ายแม้ตอน idle — ราคาตรงของ portability
+- **Portability มีเพดาน** platform layer ที่ cloud-neutral (Datadog/Keycloak/GrowthBook บน Helm) ย้ายได้จริงโดยไม่เปลี่ยน; layer ใต้มัน (network, cluster, data, IAM) ไม่ได้ และการแกล้งทำเป็นว่ามัน fungible คือจุดที่ multi-cloud project เข้าสู่ปัญหา
+
+multi-cloud คือคำตอบที่ถูกเมื่อ portability หรือการเลี่ยง lock-in เป็นความต้องการจริง เมื่อมันไม่ใช่ cloud เดียวที่ทำลึก ๆ มักเป็น engineering ที่ดีกว่า — และตอนนี้คุณพูด *ได้ว่าทำไม* พร้อมใบเสร็จ
+
+## Verify
+
+Tear down หนึ่ง cloud แล้วยืนยันว่ามันว่างเปล่าจริง destroy AWS tree:
+
+```bash
+cd live/aws
+terragrunt run --all destroy --terragrunt-non-interactive
+```
+
+คาดหวัง: Terragrunt destroy ในลำดับ dependency ย้อนกลับและจบอย่างสะอาด:
+
+```
+INFO   The stack at . will be processed in the following order for command destroy:
+Group 1
+- Module ./shopmicro
+Group 2
+- Module ./platform
+- Module ./iam
+Group 3
+- Module ./cluster
+- Module ./data
+Group 4
+- Module ./network
+...
+Destroy complete! Resources: 34 destroyed.
+```
+
+จากนั้นยืนยันว่าไม่มีอะไรค้าง — re-plan ควรอยาก *สร้าง* ทุกอย่างใหม่อีกครั้ง (พิสูจน์ว่า state ว่างเปล่า) และ cloud LB ควรหายไป:
+
+```bash
+terragrunt run --all plan --terragrunt-non-interactive | tail -n 3
+# => Plan: 34 to add, 0 to change, 0 to destroy.
+
+aws elbv2 describe-load-balancers --region us-east-1 \
+  --query "LoadBalancers[?contains(Tags[?Key=='project'].Value, 'clouddeploy')]"
+# => []   (no CloudDeploy load balancer left billing)
+```
+
+`run --all plan` ที่อยากเพิ่มทุกอย่างกลับมา และ load-balancer list ที่ว่างเปล่า คือ teardown ที่สะอาด ทำซ้ำสำหรับ `gcp` และ `azure` จากนั้นลบ state backend ด้วยมือ
+
+## ตรวจสอบความเข้าใจ
+
+1. ทำไมรายการที่ใหญ่ที่สุดบน CloudDeploy ถึงมาจากบริการ *managed* และเหตุผลบรรทัดเดียวที่มันยังเป็น trade ที่ถูกสำหรับ platform นี้คืออะไร?
+2. `terragrunt run --all destroy` เดิน graph ถอยหลัง ทำไม ShopMicro และ platform Helm release ต้องถูก destroy *ก่อน* cluster — อะไรรั่วถ้าคุณไม่ทำ?
+3. state backend bucket รอด `run --all destroy` ทำไมมันถึงตั้งใจอยู่นอก graph ของ `live/` และคุณลบมันเมื่อไหร่?
+4. ระบุ case ที่ซื่อสัตย์ทั้งฝ่ายสนับสนุนและคัดค้านการสร้างสิ่งนี้บนสาม cloud multi-cloud เป็นทางเลือกที่ถูกเมื่อไหร่ และ one-cloud-deep เป็น engineering ที่ดีกว่าเมื่อไหร่?
+
+## Recap
+
+ตอนนี้คุณ account platform และปิดมันได้อย่างสะอาด: cost model คร่าว ๆ ที่ครอบงำโดยสาม managed control plane และสาม managed database, default tag/label ที่ทำให้ spend attribute ได้, budget ต่อ cloud พร้อม alert เป็นมิเตอร์เตือนล่วงหน้า, และ `terragrunt run --all destroy` ที่ tear แต่ละ cloud ลงในลำดับ dependency ย้อนกลับ — โดยระวัง cloud LB, disk, และ state backend ที่ไม่หายไปเอง และคุณ defend ทางเลือก multi-cloud ได้อย่างซื่อสัตย์: DRY แต่ไม่ฟรี, กว้างแต่ไม่ลึก, portable ที่ platform layer แต่ไม่ใช่ใต้มัน
+
+นั่นคือ lifecycle เต็ม — provision, run, observe, secure, ship, และ tear down ข้ามสาม cloud ถึงเวลาถอยออกมาดูสิ่งที่คุณสร้างและสิ่งที่คุณ defend ได้แล้ว: [Wrap-up →](/clouddeploy/th/wrap-up/)

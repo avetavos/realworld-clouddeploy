@@ -1,0 +1,175 @@
+---
+title: State and Drift
+description: "Managing remote state across three clouds, and using terragrunt run --all plan — on a schedule — as a drift check that catches console changes before they bite."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+Three clouds means three remote state backends and three places reality can quietly diverge from your code. This lesson does two things:
+
+- **Recaps the remote-state layout** — how `live/aws`, `live/gcp`, and `live/azure` each keep their own locked state in their own cloud's backend, and why that separation matters when a job or a teammate is applying somewhere else.
+- **Turns `terragrunt run --all plan` into a drift detector** — a scheduled workflow that plans all three clouds on a cron and shouts when a plan comes back non-empty, because a non-empty plan on an unchanged repo means someone changed something out-of-band.
+
+The insight is that we already built the drift detector in the last module. A `plan` that should say "no changes" but doesn't *is* the drift signal — we just need to run it on a schedule and read the exit code.
+
+## Why
+
+State is the source of truth for what Terraform believes exists. Drift is the gap between that belief and what's actually running — a security group widened by hand during an incident, a node pool resized in the console "just for now," a managed-DB parameter nudged by another team. On one cloud, drift is a nuisance. On three, it's three times the surface and three consoles nobody's watching.
+
+You can't prevent drift entirely — sometimes a 2am hotfix in the console is the right call. What you *can* do is **detect it fast and decide deliberately**: either fold the change back into code (so it survives the next apply) or let the next apply revert it (because code is truth). The tool for detecting it is the plan you already trust, run on a timer, reading `-detailed-exitcode` so a machine can tell "no changes" from "something moved."
+
+## Pros & cons
+
+**State per cloud in each cloud's own backend vs. one central backend for all three**
+
+- **Pros:** Each cloud's state lives where that cloud's credentials already reach — S3 + DynamoDB lock for AWS, GCS for GCP, an Azure Storage container for Azure. A total outage of one cloud doesn't lock you out of operating the other two, and each backend's locking is native and battle-tested.
+- **Cons:** Three backends to bootstrap, back up, and secure, with three sets of access controls. A single central backend (say, everything in one S3 bucket) is one thing to protect — at the cost of coupling all three clouds' state to one cloud's availability and blast radius.
+
+**Scheduled drift plan vs. only planning on PRs**
+
+- **Pros:** Out-of-band changes don't wait for someone to open a PR to be noticed — the nightly plan surfaces them the next morning, with the exact diff. Drift caught in a day is a comment; drift caught in a month is an incident.
+- **Cons:** A scheduled `run --all plan` costs CI minutes and read API calls every night on three clouds, and a noisy environment (things that legitimately change on their own) can train people to ignore the alert. You tune the schedule and scope to keep the signal sharp.
+
+## Set it up
+
+### 1. Remote state, recapped per cloud
+
+Each `root.hcl` declares the backend for its cloud (from [Terragrunt & Remote State](/clouddeploy/en/terragrunt/)). The shape is identical; only the backend and its locking differ:
+
+```hcl
+# live/aws/root.hcl — S3 state, DynamoDB lock
+remote_state {
+  backend  = "s3"
+  generate = { path = "backend.tf", if_exists = "overwrite_terragrunt" }
+  config = {
+    bucket         = "clouddeploy-tfstate-aws"
+    key            = "${path_relative_to_include()}/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "clouddeploy-locks"   # lock table
+  }
+}
+```
+
+```hcl
+# live/gcp/root.hcl — GCS state (locking is built into the GCS backend)
+remote_state {
+  backend  = "gcs"
+  generate = { path = "backend.tf", if_exists = "overwrite_terragrunt" }
+  config = {
+    bucket = "clouddeploy-tfstate-gcp"
+    prefix = "${path_relative_to_include()}"
+  }
+}
+```
+
+```hcl
+# live/azure/root.hcl — Azure Storage state (blob lease provides locking)
+remote_state {
+  backend  = "azurerm"
+  generate = { path = "backend.tf", if_exists = "overwrite_terragrunt" }
+  config = {
+    resource_group_name  = "clouddeploy-tfstate"
+    storage_account_name = "clouddeploytfstate"
+    container_name       = "tfstate"
+    key                  = "${path_relative_to_include()}/terraform.tfstate"
+  }
+}
+```
+
+`path_relative_to_include()` gives every unit its own state key under the same backend, so `network`, `cluster`, `data`, `platform`, and `shopmicro` never share a state file — locking one unit's apply doesn't block another's.
+
+### 2. A scheduled drift-detection workflow
+
+`terragrunt run --all plan` with Terraform's `-detailed-exitcode` returns **0** for "no changes," **2** for "changes present," and **1** for a real error. A scheduled workflow runs it per cloud and fails the job on exit code 2 — which, on an unchanged `main`, means drift:
+
+```yaml
+name: drift
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch: {}    # allow a manual run
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  drift:
+    name: drift (${{ matrix.cloud }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: [aws, gcp, azure]
+    steps:
+      - uses: actions/checkout@v6
+
+      # ... the same per-cloud OIDC auth + tooling steps as plan.yml,
+      #     using the READ-ONLY plan role (drift detection never applies) ...
+
+      - name: Detect drift
+        working-directory: live/${{ matrix.cloud }}
+        run: |
+          # -detailed-exitcode: 0 = no changes, 2 = drift, 1 = error
+          terragrunt run --all plan \
+            --terragrunt-non-interactive \
+            -- -detailed-exitcode
+```
+
+Because the plan role is read-only, this job can *never* fix drift by accident — it only reports it. Wire the failure to wherever your team looks (a Slack notify step, a GitHub issue, an email) so a red `drift (gcp)` is impossible to miss.
+
+### 3. Handling drift once you've found it
+
+A non-empty drift plan is a decision, not an emergency. Read the diff and pick one:
+
+- **Code is truth → let apply revert it.** If the out-of-band change was wrong or temporary, merge nothing; the next `run --all apply` (from the [apply workflow](/clouddeploy/en/cicd/apply-and-deploy/)) puts reality back to what the code says. This is the default and the reason code-defined infra is worth the trouble.
+- **The change was right → fold it into code.** If the console change should stay (a genuinely better node size), update the module/inputs so the code matches, open a PR, and let plan-on-PR confirm it now shows no changes. Reality and code re-converge, and it survives the next apply.
+- **Terraform lost track of a real resource → import it.** If something exists but isn't in state (created by hand), `terragrunt import` it into the right unit so it's managed again, rather than having Terraform try to create a duplicate.
+
+## Verify
+
+Confirm the clean baseline first — an unchanged `main` should plan to nothing:
+
+```bash
+cd live/aws
+terragrunt run --all plan --terragrunt-non-interactive -- -detailed-exitcode
+echo "exit code: $?"
+```
+
+Expected on a clean platform:
+
+```
+...
+No changes. Your infrastructure matches the configuration.
+exit code: 0
+```
+
+Now simulate drift: in the AWS console, bump the EKS node group's desired size from 2 to 3 (or resize a node pool) — then re-run the same command. The plan now reports the gap and the exit code flips:
+
+```
+  # module.cluster ... will be updated in-place
+  ~ scaling_config {
+      ~ desired_size = 3 -> 2
+    }
+Plan: 0 to add, 1 to change, 0 to destroy.
+exit code: 2
+```
+
+Exit code `2` on an unchanged repo is drift, caught. Revert the console change (or fold it into code) and confirm the plan is empty and the exit code is back to `0`.
+
+## Check your understanding
+
+1. Why does each cloud keep its own state backend instead of pointing all three `live/` trees at one bucket? What does the separation buy you during a cloud outage?
+2. What do exit codes 0, 1, and 2 from `plan -detailed-exitcode` mean, and why is that the key that turns a plan into an automated drift check?
+3. Someone widened a security group in the AWS console during an incident. Walk through the two legitimate ways to resolve the resulting drift and when you'd pick each.
+4. Why is it important that the drift workflow uses the **read-only** plan role rather than the apply role?
+
+## Recap
+
+State is the source of truth, and drift is the gap between it and reality — three times over on three clouds. You keep each cloud's state locked in its own backend, and you catch drift with the plan you already trust: `terragrunt run --all plan -detailed-exitcode` on a nightly schedule, read-only, exit code 2 meaning "something moved." When it fires, you decide deliberately — let apply revert it, fold it into code, or import what fell out of state.
+
+Detecting drift keeps the platform honest. The other thing running three clusters does is cost money — so the last lesson is about knowing what you're spending, tagging and budgeting for it, and tearing it all down cleanly when you're done: [Cost and Teardown →](/clouddeploy/en/multi-cloud/cost-and-teardown/).

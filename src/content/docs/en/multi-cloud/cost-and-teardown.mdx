@@ -1,0 +1,162 @@
+---
+title: Cost and Teardown
+description: "What three clusters and three managed databases actually cost, keeping it visible with tags and budgets, and a clean terragrunt run --all destroy per cloud — plus the honest trade-offs of going multi-cloud."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+Everything until now added resources. This lesson is about the meter they run and how to switch them off. Three parts:
+
+- **A cost model** — a rough, honest number for what CloudDeploy costs per month: three managed control planes, three sets of worker nodes, three managed Postgres instances, three load balancers, plus state and egress.
+- **Keeping it visible** — tags/labels on every resource so spend is attributable per cloud and per project, and a **budget with alerts** on each cloud so a runaway resource pings you before the invoice does.
+- **A clean teardown** — `terragrunt run --all destroy` per cloud, in the right order, plus the resources that *don't* disappear on their own and will keep charging you if you forget them.
+
+And finally, the part a course owes you: the **honest trade-offs** of having built this on three clouds instead of one.
+
+## Why
+
+A multi-cloud capstone that you leave running is an expensive way to prove a point. The skill isn't just standing the platform up — it's knowing what it costs while it's up, seeing that cost broken down so you can reason about it, and being able to take it *all* the way down with confidence that nothing is quietly left billing. Orphaned load balancers and un-deleted disks are the classic "I thought I destroyed that" line item; the discipline here is making teardown as reliable as apply.
+
+The bigger why is intellectual honesty. "We run on three clouds" sounds impressive, and the DRY Terragrunt structure makes it *tractable* — but it isn't free, and it isn't as deep per cloud as a single-cloud build. Naming that trade plainly is the difference between a portfolio piece and a cargo cult.
+
+## Pros & cons
+
+**Managed everything (EKS/GKE/AKS + RDS/Cloud SQL/Azure DB) vs. self-hosting on plain VMs**
+
+- **Pros:** The managed control planes, patching, and backups are what let one person run a production-shaped platform on three clouds at all. You pay for control-plane hours and managed-DB instances and get your time back.
+- **Cons:** Three managed control planes plus three managed databases is the bulk of the bill, and it's a floor you pay even when the clusters are idle. Self-hosting on VMs is cheaper at rest and far more work — the wrong trade for a teaching platform, the right one to *know* exists.
+
+**Destroy when idle vs. keep the platform running**
+
+- **Pros:** `run --all destroy` per cloud drops the spend to almost nothing (just state storage), and because the whole platform is in code, `run --all apply` brings it back byte-for-byte when you need it. For a course or a demo, destroy-when-idle is the cheap default.
+- **Cons:** A cold rebuild takes real minutes (clusters and DBs are slow to create), and anything living only in the cluster — data in ShopMicro's DB, a hand-made Keycloak user — is gone unless you exported it. Persistent environments avoid that at the cost of paying to leave them on.
+
+## Set it up
+
+### 1. Tag and label everything
+
+Attribution starts at provisioning. Set default tags/labels at the provider level so every resource in a cloud carries them, and cost tools can slice by project and cloud. AWS applies `default_tags` on the provider; GCP uses resource `labels`; Azure uses resource `tags`:
+
+```hcl
+# generated per cloud from root.hcl — AWS example
+provider "aws" {
+  region = "us-east-1"
+  default_tags {
+    tags = {
+      project = "clouddeploy"
+      cloud   = "aws"
+      managed = "terragrunt"
+    }
+  }
+}
+```
+
+With consistent tags, each cloud's cost explorer (AWS Cost Explorer, GCP's billing reports, Azure Cost Management) can answer "what is CloudDeploy costing me on this cloud" in one filter.
+
+### 2. A budget with alerts, per cloud
+
+A budget won't stop spend, but it turns a surprise invoice into an early warning. Define one per cloud in Terraform — an `aws_budgets_budget`, a `google_billing_budget`, an `azurerm_consumption_budget_subscription` — each with a monthly limit and alert thresholds (e.g. 50% / 80% / 100%) that email or page you:
+
+```hcl
+# modules/aws/... — an AWS monthly cost budget with alerts
+resource "aws_budgets_budget" "clouddeploy" {
+  name         = "clouddeploy-monthly"
+  budget_type  = "COST"
+  limit_amount = "300"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = ["you@example.com"]
+  }
+}
+```
+
+Three budgets, three thresholds — so a stuck load balancer or an oversized node pool announces itself while it's still a rounding error.
+
+### 3. A clean `terragrunt run --all destroy` per cloud
+
+Teardown is apply in reverse. `terragrunt run --all destroy` walks the dependency graph **backwards** — ShopMicro and the platform Helm releases first, then IAM, then cluster and data, then network last — so nothing is destroyed while something still depends on it:
+
+```bash
+cd live/aws
+terragrunt run --all destroy --terragrunt-non-interactive
+```
+
+Do this per cloud (`live/aws`, `live/gcp`, `live/azure`). A few things do **not** vanish with the graph and will keep charging you if you forget them:
+
+- **Cloud load balancers created by Kubernetes `Service type=LoadBalancer` / ingress**, not by Terraform. Destroy the Helm releases (or `kubectl delete` the ingress) *before* the cluster so the cloud LB is released; a dangling LB outlives its cluster and keeps billing.
+- **Persistent volumes / managed disks** backing StatefulSets (Keycloak, GrowthBook's datastore). Check they're reclaimed.
+- **The state backends themselves** — the S3/GCS/Azure Storage buckets and the DynamoDB lock table. These are intentionally *not* in the `live/` graph (they'd be a chicken-and-egg), so they survive `run --all destroy`. Delete them by hand only when you're truly done, and only after confirming state is empty.
+
+Order matters: tear the workload and platform down first (releasing cloud LBs and disks), then the infrastructure, then — deliberately, last, by hand — the state backend.
+
+### 4. The honest multi-cloud trade-offs
+
+What building on three clouds actually bought, and cost:
+
+- **DRY, not free.** Terragrunt kept the config from being triplicated, but there are still three IAM models, three ingress/LB behaviors, and three managed-DB quirks that genuinely differ — the consistent module interface hides them from the `live/` wiring, not from you.
+- **Broad, not deep.** One region and one environment per cloud is enough to demonstrate portability; it is *not* a production single-cloud build with multi-region, autoscaling depth, and per-cloud tuning. A single-cloud course would go deeper where this one goes wider.
+- **3× the cost floor.** Three control planes and three managed DBs are a real monthly minimum you pay even at idle — the direct price of portability.
+- **Portability has a ceiling.** The cloud-neutral platform layer (Datadog/Keycloak/GrowthBook on Helm) really does move unchanged; the layers below it (network, cluster, data, IAM) do not, and pretending they're fungible is where multi-cloud projects get into trouble.
+
+Multi-cloud is the right answer when portability or avoiding lock-in is a genuine requirement. When it isn't, one cloud done deeply is usually the better engineering — and now you can say *why*, with the receipts.
+
+## Verify
+
+Tear down one cloud and confirm it's genuinely empty. Destroy the AWS tree:
+
+```bash
+cd live/aws
+terragrunt run --all destroy --terragrunt-non-interactive
+```
+
+Expected: Terragrunt destroys in reverse dependency order and finishes clean:
+
+```
+INFO   The stack at . will be processed in the following order for command destroy:
+Group 1
+- Module ./shopmicro
+Group 2
+- Module ./platform
+- Module ./iam
+Group 3
+- Module ./cluster
+- Module ./data
+Group 4
+- Module ./network
+...
+Destroy complete! Resources: 34 destroyed.
+```
+
+Then confirm nothing lingers — re-plan should want to *create* everything again (proving state is empty), and the cloud LB should be gone:
+
+```bash
+terragrunt run --all plan --terragrunt-non-interactive | tail -n 3
+# => Plan: 34 to add, 0 to change, 0 to destroy.
+
+aws elbv2 describe-load-balancers --region us-east-1 \
+  --query "LoadBalancers[?contains(Tags[?Key=='project'].Value, 'clouddeploy')]"
+# => []   (no CloudDeploy load balancer left billing)
+```
+
+A `run --all plan` that wants to add everything back, and an empty load-balancer list, is a clean teardown. Repeat for `gcp` and `azure`, then delete the state backends by hand.
+
+## Check your understanding
+
+1. Why do the biggest line items on CloudDeploy come from *managed* services, and what is the one-line reason that's still the right trade for this platform?
+2. `terragrunt run --all destroy` walks the graph backwards. Why must ShopMicro and the platform Helm releases be destroyed *before* the cluster — what leaks if you don't?
+3. The state backend buckets survive `run --all destroy`. Why are they deliberately outside the `live/` graph, and when do you remove them?
+4. State the honest case for and against having built this on three clouds. When is multi-cloud the right call, and when is one-cloud-deep the better engineering?
+
+## Recap
+
+You can now account for the platform and switch it off cleanly: a rough cost model dominated by three managed control planes and three managed databases, default tags/labels making spend attributable, a per-cloud budget with alerts as an early-warning meter, and `terragrunt run --all destroy` tearing each cloud down in reverse dependency order — minding the cloud LBs, disks, and state backends that don't vanish on their own. And you can defend the multi-cloud choice honestly: DRY but not free, broad but not deep, portable at the platform layer but not below it.
+
+That's the full lifecycle — provision, run, observe, secure, ship, and tear down, across three clouds. Time to step back and look at what you built and what you can now defend: [Wrap-up →](/clouddeploy/en/wrap-up/).
