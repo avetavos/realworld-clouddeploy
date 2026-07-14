@@ -1,0 +1,199 @@
+---
+title: Deploy Keycloak
+description: "Add Keycloak to the platform layer as a Helm release, then define a shopmicro realm and an OIDC client with the Terraform keycloak provider."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+[ShopMicro is running](/clouddeploy/en/deploy-shopmicro/) on all three clusters, but its gateway is wide open — anyone who reaches the ingress reaches the app. Before we can fix that, we need an identity provider to authenticate against.
+
+This lesson deploys **Keycloak** into the cloud-neutral platform layer (the same `modules/platform/` module that already carries the [Datadog agent](/clouddeploy/en/datadog/)), then uses the **Terraform `keycloak` provider** to declare a `shopmicro` realm and an OIDC client for the gateway. Because Keycloak runs *on* Kubernetes via Helm, it looks identical on EKS, GKE, and AKS — only the ingress hostname differs per cloud.
+
+The client we create here is what [the next lesson](/clouddeploy/en/keycloak/oidc-at-the-gateway/) points oauth2-proxy at.
+
+## Why
+
+An identity provider is exactly the kind of concern that belongs in the platform layer, not baked into each cloud. Authentication rules — realms, clients, redirect URIs, token lifetimes — are application-shaped, not infrastructure-shaped, so re-declaring them per cloud would be triplicated config with no payoff. Running Keycloak as a Helm release on the cluster keeps one definition and lets Terragrunt place it on each cloud with only the hostname changing.
+
+Declaring the realm and client in Terraform (rather than clicking through the admin console) keeps identity config in the same review-and-apply loop as the rest of the platform. The realm becomes a reviewable diff, not tribal knowledge living in one person's browser session.
+
+## Pros & cons
+
+**Keycloak Helm release vs. a managed identity service (Cognito / Cloud Identity Platform / Entra External ID)**
+
+- **Pros:** One config that runs the same on every cloud; no per-cloud identity service to learn three times; full control over realms, flows, and token claims; nothing leaves the cluster.
+- **Cons:** You now operate an identity provider — its database, upgrades, and availability are yours. A managed service offloads that, at the cost of the cloud-neutrality this whole course is built around.
+
+**Realm as Terraform vs. realm import (`--import-realm` from a JSON file)**
+
+- **Pros (Terraform):** The realm and client are declarative resources with a plan/apply diff; drift is visible; the OIDC client secret is a Terraform output you can wire straight into oauth2-proxy.
+- **Cons (Terraform):** The `keycloak` provider must reach Keycloak's admin API at apply time, which creates an ordering wrinkle (Keycloak must be up first). Realm import via a mounted JSON file sidesteps the network path but turns your realm into an opaque blob the chart loads at boot.
+
+## Set it up
+
+We add Keycloak to the existing platform module and a small `keycloak` sub-configuration for the realm.
+
+### 1. `modules/platform/keycloak.tf`
+
+The Helm release. We use the Bitnami Keycloak chart from its OCI registry. Keycloak runs in `production` mode behind the ingress (TLS terminates at the ingress, so Keycloak trusts the forwarded headers), backed by the chart's bundled PostgreSQL.
+
+```hcl
+resource "kubernetes_secret" "keycloak_admin" {
+  metadata {
+    name      = "keycloak-admin"
+    namespace = var.platform_namespace
+  }
+  data = {
+    "admin-password" = var.keycloak_admin_password
+  }
+}
+
+resource "helm_release" "keycloak" {
+  name       = "keycloak"
+  namespace  = var.platform_namespace
+  repository = "oci://registry-1.docker.io/bitnamicharts"
+  chart      = "keycloak"
+  version    = var.keycloak_chart_version
+
+  values = [yamlencode({
+    production   = true
+    proxyHeaders = "xforwarded"
+    auth = {
+      adminUser      = "admin"
+      existingSecret = kubernetes_secret.keycloak_admin.metadata[0].name
+      passwordSecretKey = "admin-password"
+    }
+    ingress = {
+      enabled   = true
+      ingressClassName = var.ingress_class
+      hostname  = var.keycloak_hostname   # e.g. "id.aws.clouddeploy.example.com"
+      tls       = true
+    }
+    postgresql = { enabled = true }
+  })]
+}
+```
+
+The exact value keys on the Bitnami chart shift between major versions (the proxy setting in particular has changed), so pin `keycloak_chart_version` and skim `helm show values` before you apply. Note also that Bitnami moved most free images to a `bitnamilegacy` repository in 2025 — if image pulls fail, that catalog change is why, and the [current maintained alternatives](https://www.keycloak.org/getting-started/getting-started-kube) are the Keycloak Operator or the community `keycloakx` chart.
+
+### 2. `modules/platform/keycloak-realm.tf`
+
+The realm and OIDC client, via the `keycloak` provider. Keycloak 17+ (the Quarkus distribution) dropped the old `/auth` path prefix, so issuer URLs are `https://<host>/realms/<realm>` with no `/auth` segment.
+
+```hcl
+provider "keycloak" {
+  client_id = "admin-cli"
+  username  = "admin"
+  password  = var.keycloak_admin_password
+  url       = "https://${var.keycloak_hostname}"
+}
+
+resource "keycloak_realm" "shopmicro" {
+  realm   = "shopmicro"
+  enabled = true
+
+  # keep the provider from racing the Helm release
+  depends_on = [helm_release.keycloak]
+}
+
+resource "keycloak_openid_client" "gateway" {
+  realm_id  = keycloak_realm.shopmicro.id
+  client_id = "shopmicro-gateway"
+  name      = "ShopMicro Gateway"
+  enabled   = true
+
+  access_type           = "CONFIDENTIAL"
+  standard_flow_enabled = true
+
+  valid_redirect_uris = [
+    "https://${var.shopmicro_hostname}/oauth2/callback",
+  ]
+}
+```
+
+`CONFIDENTIAL` + `standard_flow_enabled` is the authorization-code flow a server-side proxy uses. The `oauth2/callback` redirect URI is exactly where oauth2-proxy will receive the code in the next lesson.
+
+### 3. `modules/platform/outputs.tf`
+
+Expose the client secret so the gateway lesson can consume it without a second trip to the console.
+
+```hcl
+output "gateway_client_id" {
+  value = keycloak_openid_client.gateway.client_id
+}
+
+output "gateway_client_secret" {
+  value     = keycloak_openid_client.gateway.client_secret
+  sensitive = true
+}
+
+output "keycloak_issuer_url" {
+  value = "https://${var.keycloak_hostname}/realms/shopmicro"
+}
+```
+
+### 4. `live/aws/platform/terragrunt.hcl`
+
+The platform unit already depends on `cluster` (for the kubernetes/helm provider config). Add the Keycloak inputs. The `keycloak` provider block is generated the same way the `kubernetes`/`helm` providers are — from the cluster outputs plus the admin password.
+
+```hcl
+include "root" { path = find_in_parent_folders("root.hcl") }
+terraform { source = "../../../modules/platform" }
+
+dependency "cluster" { config_path = "../cluster" }
+
+inputs = {
+  platform_namespace      = "platform"
+  ingress_class           = "nginx"
+  keycloak_hostname       = "id.aws.clouddeploy.example.com"
+  shopmicro_hostname      = "shop.aws.clouddeploy.example.com"
+  keycloak_admin_password = get_env("KEYCLOAK_ADMIN_PASSWORD")
+  keycloak_chart_version  = "24.4.0"
+}
+```
+
+`gcp/` and `azure/` are the same file with their own hostnames — the whole point of a cloud-neutral platform layer.
+
+## Verify
+
+Plan the platform unit and confirm Keycloak plus the realm and client show up:
+
+```bash
+cd live/aws/platform
+terragrunt plan
+# Plan: 4 to add, 0 to change, 0 to destroy.
+#   + helm_release.keycloak
+#   + keycloak_realm.shopmicro
+#   + keycloak_openid_client.gateway
+#   + kubernetes_secret.keycloak_admin
+```
+
+Apply, then confirm the pod is running and the realm answers on its OIDC discovery endpoint:
+
+```bash
+terragrunt apply
+
+kubectl -n platform get pods -l app.kubernetes.io/name=keycloak
+# NAME         READY   STATUS    RESTARTS   AGE
+# keycloak-0   1/1     Running   0          3m
+
+curl -s https://id.aws.clouddeploy.example.com/realms/shopmicro/.well-known/openid-configuration | jq .issuer
+# "https://id.aws.clouddeploy.example.com/realms/shopmicro"
+```
+
+That issuer URL is the single value the gateway needs. If discovery returns the issuer, the realm is live and the OIDC client exists.
+
+**Check your understanding:**
+
+1. Why does Keycloak live in `modules/platform/` rather than in the per-cloud `modules/aws|gcp|azure/` modules?
+2. What breaks if the `keycloak` provider tries to create the realm before the Helm release is ready, and how does the config prevent it?
+3. Why is `access_type` set to `CONFIDENTIAL` with `standard_flow_enabled` instead of a public client?
+4. Keycloak 17+ removed a path segment that older OIDC guides still show. What is it, and where would leaving it in break discovery?
+
+## Recap
+
+You added Keycloak to the cloud-neutral platform layer as a Helm release, then declared a `shopmicro` realm and a confidential `shopmicro-gateway` OIDC client in Terraform — with the issuer URL and client secret exposed as outputs. Identity now runs the same on all three clouds, defined as a reviewable diff rather than console clicks.
+
+Right now nothing actually *enforces* login. Next, put that OIDC client to work: [OIDC at the Gateway →](/clouddeploy/en/keycloak/oidc-at-the-gateway/) sits oauth2-proxy in front of ShopMicro so an unauthenticated request gets redirected to the Keycloak login page.
