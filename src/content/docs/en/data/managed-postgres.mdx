@@ -1,0 +1,252 @@
+---
+title: Managed Postgres
+description: "The GCP Cloud SQL and Azure Database implementations behind the same data interface — and turning the sensitive outputs into the connection secret ShopMicro consumes."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The [data module](/clouddeploy/en/data/the-data-module/) proved the interface on AWS RDS. Now we implement the **same five inputs and outputs** on GCP Cloud SQL and Azure Database for PostgreSQL, and then do the thing all of this was for: turn `db_host`, `db_port`, `db_name`, `db_user`, and `db_password` into a Kubernetes Secret that [ShopMicro](/clouddeploy/en/deploy-shopmicro/) reads as a `DATABASE_URL`.
+
+The payoff of a consistent interface shows up here. The `live/gcp/data/` and `live/azure/data/` units are byte-for-byte the shape of the AWS one — same `dependency "network"`, same inputs — because only the *implementation* differs. What differs is real, though: private connectivity is a VPC security group on AWS, private service access on GCP, and a delegated subnet plus a private DNS zone on Azure. Naming those differences is half the lesson.
+
+## Why
+
+This is where "one interface, three clouds" earns its keep or falls apart. If each managed database exposed a different set of outputs, every downstream consumer — the ShopMicro unit, the connection secret, CI — would need three code paths. By forcing Cloud SQL and Azure Database to emit exactly `db_host`/`db_port`/`db_name`/`db_user`/`db_password`, the *consumer* stays cloud-agnostic: it builds one `DATABASE_URL` the same way no matter where the database physically runs.
+
+The managed-DB layer is also where each cloud's private-networking model is most different, so it's the honest place to show that "multi-cloud" isn't free. The interface hides the difference from *consumers*; it does not hide it from *you*, the person writing the module. That's the right trade — absorb the complexity once, in the module, so the fifteen things downstream don't each pay for it.
+
+## Pros & cons
+
+**One interface hiding three private-networking models vs cloud-native modules**
+
+- **Pros:** consumers build the connection string identically everywhere; swapping clouds doesn't touch ShopMicro; the diff between `live/gcp/data` and `live/azure/data` is inputs, not logic.
+- **Cons:** the interface is a lowest-common-denominator — it can't surface Cloud SQL read replicas or Azure zone-redundant HA without leaking cloud-specific outputs. When you need those, you extend the interface deliberately rather than special-casing a consumer.
+
+**Building the connection secret in Terraform vs letting the app assemble it**
+
+- **Pros:** Terraform already holds every piece in state, so it can write one `Secret` with a ready `DATABASE_URL`; the app just reads an env var and stays ignorant of host/port/credentials.
+- **Cons:** it couples the data unit to the Kubernetes provider and the app's expected secret shape. The alternative — hand the app the five values and let it assemble the URL — decouples them but pushes URL-encoding and null-handling into every service.
+
+## Set it up
+
+### 1. `modules/gcp/data/main.tf` — Cloud SQL
+
+Cloud SQL reaches a VPC over **private service access**: a reserved IP range peered to your network, which the instance then binds to with `ipv4_enabled = false`.
+
+```hcl
+variable "name"       { type = string }
+variable "network_id" { type = string } # the VPC self_link / id
+variable "subnet_ids" { type = list(string) }
+variable "db_name" {
+  type    = string
+  default = "shopmicro"
+}
+
+# reserve a range and peer it for private service access
+resource "google_compute_global_address" "psa" {
+  name          = "${var.name}-psa"
+  purpose       = "VPC_PEERING"
+  address_type  = "INTERNAL"
+  prefix_length = 16
+  network       = var.network_id
+}
+
+resource "google_service_networking_connection" "psa" {
+  network                 = var.network_id
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.psa.name]
+}
+
+resource "random_password" "db" {
+  length  = 24
+  special = false
+}
+
+resource "google_sql_database_instance" "this" {
+  name             = var.name
+  database_version = "POSTGRES_16"
+  region           = "us-central1"
+  depends_on       = [google_service_networking_connection.psa]
+
+  settings {
+    tier = "db-custom-1-3840" # 1 vCPU / 3.75 GB
+
+    ip_configuration {
+      ipv4_enabled                                  = false
+      private_network                               = var.network_id
+      enable_private_path_for_google_cloud_services = true
+    }
+  }
+
+  deletion_protection = false # teaching platform
+}
+
+resource "google_sql_database" "this" {
+  name     = var.db_name
+  instance = google_sql_database_instance.this.name
+}
+
+resource "google_sql_user" "this" {
+  name     = "shopmicro"
+  instance = google_sql_database_instance.this.name
+  password = random_password.db.result
+}
+
+output "db_host" { value = google_sql_database_instance.this.private_ip_address }
+output "db_port" { value = 5432 }
+output "db_name" { value = google_sql_database.this.name }
+output "db_user" { value = google_sql_user.this.name }
+output "db_password" {
+  value     = random_password.db.result
+  sensitive = true
+}
+```
+
+Note `db_port` is a literal `5432` — Cloud SQL doesn't expose a port attribute, so the module supplies the constant to keep the interface whole. That's the interface absorbing a cloud quirk on the consumer's behalf.
+
+### 2. `modules/azure/data/main.tf` — Azure Database for PostgreSQL
+
+Azure's Flexible Server goes private via a **delegated subnet** plus a **private DNS zone** linked to the VNet.
+
+```hcl
+variable "name"       { type = string }
+variable "network_id" { type = string } # the VNet id
+variable "subnet_ids" { type = list(string) } # first is the delegated DB subnet
+variable "db_name" {
+  type    = string
+  default = "shopmicro"
+}
+variable "resource_group_name" {
+  type    = string
+  default = "clouddeploy"
+}
+
+data "azurerm_resource_group" "this" {
+  name = var.resource_group_name
+}
+
+resource "azurerm_private_dns_zone" "pg" {
+  name                = "${var.name}.postgres.database.azure.com"
+  resource_group_name = data.azurerm_resource_group.this.name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "pg" {
+  name                  = "${var.name}-link"
+  private_dns_zone_name = azurerm_private_dns_zone.pg.name
+  resource_group_name   = data.azurerm_resource_group.this.name
+  virtual_network_id    = var.network_id
+}
+
+resource "random_password" "db" {
+  length  = 24
+  special = false
+}
+
+resource "azurerm_postgresql_flexible_server" "this" {
+  name                          = var.name
+  resource_group_name           = data.azurerm_resource_group.this.name
+  location                      = data.azurerm_resource_group.this.location
+  version                       = "16"
+  delegated_subnet_id           = var.subnet_ids[0]
+  private_dns_zone_id           = azurerm_private_dns_zone.pg.id
+  public_network_access_enabled = false
+
+  administrator_login    = "shopmicro"
+  administrator_password = random_password.db.result
+
+  storage_mb = 32768
+  sku_name   = "B_Standard_B1ms"
+
+  depends_on = [azurerm_private_dns_zone_virtual_network_link.pg]
+}
+
+resource "azurerm_postgresql_flexible_server_database" "this" {
+  name      = var.db_name
+  server_id = azurerm_postgresql_flexible_server.this.id
+  charset   = "UTF8"
+  collation = "en_US.utf8"
+}
+
+output "db_host" { value = azurerm_postgresql_flexible_server.this.fqdn }
+output "db_port" { value = 5432 }
+output "db_name" { value = azurerm_postgresql_flexible_server_database.this.name }
+output "db_user" { value = azurerm_postgresql_flexible_server.this.administrator_login }
+output "db_password" {
+  value     = random_password.db.result
+  sensitive = true
+}
+```
+
+Three clouds, three private-networking mechanisms — VPC security group (AWS), private service access peering (GCP), delegated subnet + private DNS zone (Azure) — and one identical set of outputs.
+
+### 3. The connection secret ShopMicro consumes
+
+Now the point of all five outputs: assemble them into a `DATABASE_URL` in a Kubernetes Secret. This is a small piece of the [ShopMicro unit](/clouddeploy/en/deploy-shopmicro/), shown here because it's what the `data` outputs feed. It's cloud-agnostic — identical on every cloud because the interface is:
+
+```hcl
+dependency "data" { config_path = "../data" }
+
+resource "kubernetes_secret" "db" {
+  metadata {
+    name      = "shopmicro-db"
+    namespace = "shopmicro"
+  }
+
+  data = {
+    DATABASE_URL = format(
+      "postgres://%s:%s@%s:%d/%s",
+      dependency.data.outputs.db_user,
+      dependency.data.outputs.db_password,
+      dependency.data.outputs.db_host,
+      dependency.data.outputs.db_port,
+      dependency.data.outputs.db_name,
+    )
+  }
+}
+```
+
+Because the password came through as a sensitive output, it flows dependency → secret without ever printing to a log. ShopMicro mounts `DATABASE_URL` as an env var and never knows which cloud's database it points at.
+
+## Verify
+
+Apply each cloud's data unit and confirm the outputs have the same shape, then confirm the secret materializes.
+
+```bash
+# GCP
+cd live/gcp/data && terragrunt apply
+terragrunt output db_host   # => "10.42.0.3"   (private IP, no public route)
+terragrunt output db_port   # => 5432
+
+# Azure
+cd ../../azure/data && terragrunt apply
+terragrunt output db_host   # => "clouddeploy.postgres.database.azure.com"
+terragrunt output db_password  # => <sensitive>
+```
+
+Every cloud emits `db_host`/`db_port`/`db_name`/`db_user`/`db_password` — that sameness is what makes the connection secret cloud-agnostic. Now confirm the secret and a real connection from inside the cluster:
+
+```bash
+kubectl -n shopmicro get secret shopmicro-db -o jsonpath='{.data.DATABASE_URL}' | base64 -d
+# => postgres://shopmicro:...@10.42.0.3:5432/shopmicro   (host varies by cloud)
+
+kubectl -n shopmicro run pg --rm -it --restart=Never --image=postgres:16 -- \
+  psql "$(kubectl -n shopmicro get secret shopmicro-db -o jsonpath='{.data.DATABASE_URL}' | base64 -d)" -c '\conninfo'
+# => You are connected to database "shopmicro" ...
+```
+
+Finally, `terragrunt run --all plan` across all three `live/<cloud>/` trees should show `network → cluster → data` converged everywhere, with the `data` unit differing only in inputs — the proof that the interface held.
+
+**Check your understanding:**
+
+1. AWS, GCP, and Azure each make the database private a different way. Name the mechanism for each.
+2. Cloud SQL has no port attribute, so the module returns a literal `5432`. Why is doing that in the module better than making consumers special-case GCP?
+3. What does the identical output set buy the connection-secret code, and where would that break down if you needed a Cloud SQL read replica?
+4. Trace the database password from creation to the pod's env var. At which steps is it visible in plaintext, and what keeps those steps safe?
+
+## Recap
+
+We implemented the `data` interface twice more — GCP Cloud SQL over private service access, Azure Database for PostgreSQL over a delegated subnet and private DNS zone — behind the exact five outputs the AWS version emits. Then we turned those outputs into a cloud-agnostic `DATABASE_URL` Secret, carrying the generated password from state to pod without ever logging it. The private-networking models genuinely differ per cloud; the interface absorbs that so nothing downstream has to care.
+
+The platform now has network, cluster, identity, and data on all three clouds — every dependency ShopMicro needs. Next, [Deploying ShopMicro →](/clouddeploy/en/deploy-shopmicro/) puts the application on each cluster with a `helm_release`, wiring in this database secret and the keyless identity from the [IAM module](/clouddeploy/en/iam/workload-identity/).
