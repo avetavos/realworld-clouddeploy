@@ -32,7 +32,7 @@ flowchart TD
     CI --> App
 ```
 
-The **modules** are written once and describe *what* a piece of infrastructure is — a network, a cluster, a database, an IAM setup — with the cloud-specific details inside. **Terragrunt** is the layer that says *where* and *with what config*: a `live/aws`, `live/gcp`, and `live/azure` tree that calls the same modules with per-cloud inputs, keeps state in each cloud's remote backend with locking, and lets `terragrunt run-all` plan or apply the whole platform. On top of every cluster sits a **cloud-neutral platform layer** — Datadog, Keycloak, GrowthBook — deployed by Helm, so those services are identical no matter which cloud they land on. Then **ShopMicro's Helm chart** is the workload, and **GitHub Actions** is what runs the whole thing on a PR-and-merge cadence.
+The **modules** are written once and describe *what* a piece of infrastructure is — a network, a cluster, a database, an IAM setup — with the cloud-specific details inside. **Terragrunt** is the layer that says *where* and *with what config*: a `live/aws`, `live/gcp`, and `live/azure` tree that calls the same modules with per-cloud inputs, keeps state in each cloud's remote backend with locking, and lets `terragrunt run --all` plan or apply the whole platform. On top of every cluster sits a **cloud-neutral platform layer** — Datadog, Keycloak, GrowthBook — deployed by Helm, so those services are identical no matter which cloud they land on. Then **ShopMicro's Helm chart** is the workload, and **GitHub Actions** is what runs the whole thing on a PR-and-merge cadence.
 
 ## Why this shape
 
@@ -46,7 +46,7 @@ The costs are real and named throughout: multi-cloud means three IAM models to g
 ## The pieces
 
 - **Terraform `modules/`** — reusable `network`, `cluster`, `data`, `iam` modules with per-cloud implementations.
-- **Terragrunt `live/{aws,gcp,azure}/`** — DRY per-cloud config, remote state + locking, `run-all`.
+- **Terragrunt `live/{aws,gcp,azure}/`** — DRY per-cloud config, remote state + locking, `run --all`.
 - **Clusters** — EKS (AWS), GKE (GCP), AKS (Azure), each with node pools and networking.
 - **Managed data** — RDS / Cloud SQL / Azure Database for PostgreSQL.
 - **Platform layer (Helm)** — Datadog agent, Keycloak, GrowthBook — cloud-neutral.
