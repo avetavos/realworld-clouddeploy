@@ -5,23 +5,23 @@ sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
 ยังไม่มี infrastructure — บทนี้สร้าง *workbench* ก่อน จบบทนี้คุณจะมี Terraform และ Terragrunt ติดตั้งแล้ว, AWS, GCP, และ Azure CLIs ที่ auth เข้า account จริงเรียบร้อย, และ billing alert บนแต่ละ cloud เพื่อไม่ให้ cluster ที่ลืมไว้ค่อย ๆ ดูดเงินในบัตรคุณ
 
-ส่วนสุดท้ายนั้นสำคัญกว่าในคอร์ส single-cloud มาก CloudDeploy รัน managed Kubernetes cluster สามตัวและ managed database สามตัว จุดประสงค์ทั้งหมดของ Module 1 คือทำให้ต้นทุนมองเห็นได้ *ก่อน* ที่ Module 5 จะทำให้มันเกิดขึ้นจริง
+ส่วนสุดท้ายนั้นสำคัญกว่าในคอร์ส single-cloud มาก CloudDeploy รัน managed Kubernetes cluster สามตัวและ managed database สามตัว จุดประสงค์ทั้งหมดของ Module 1 คือทำให้ต้นทุนมองเห็นได้ *ก่อน* ที่ Module 5 จะทำให้เกิดขึ้นจริง
 
-## Why
+## ทำไม
 
-Terraform คือ engine — มันแปลงไฟล์ `.tf` แบบ declarative ให้เป็น API call ยิงไปที่ cloud Terragrunt อยู่ชั้นถัดขึ้นไปหนึ่งชั้น: มันเก็บ configuration ให้ DRY ข้ามทั้งสาม cloud และต่อสาย remote state กับ locking ไว้ให้ คุณจึงไม่ต้อง copy-paste backend block เดิม ๆ ลงในสิบกว่า directory คุณต้องติดตั้งทั้งคู่ตั้งแต่วันแรก แม้ Terragrunt จะยังไม่คุ้มค่าจนกว่าจะถึง Module 3
+Terraform คือ engine ที่แปลงไฟล์ `.tf` แบบ declarative ให้เป็น API call ยิงไปที่ cloud Terragrunt อยู่ชั้นถัดขึ้นไปหนึ่งชั้น: เก็บ configuration ให้ DRY ข้ามทั้งสาม cloud และต่อสาย remote state กับ locking ไว้ให้ คุณจึงไม่ต้อง copy-paste backend block เดิม ๆ ลงในสิบกว่า directory คุณต้องติดตั้งทั้งคู่ตั้งแต่วันแรก แม้ Terragrunt จะยังไม่คุ้มค่าจนกว่าจะถึง Module 3
 
-cloud CLIs ทั้งสามทำหน้าที่สองอย่าง คุณจะใช้มันแหย่ดู resource ด้วยมือ (`aws s3 ls`, `gcloud storage ls`, `az group list`) แต่ที่สำคัญกว่าคือ **Terraform authenticate ด้วยวิธีเดียวกับที่ CLIs ทำ** login AWS CLI เข้า account แล้ว AWS provider ก็หยิบ credential ชุดนั้นไปใช้ รัน `gcloud auth application-default login` แล้ว Google provider ก็ใช้ตัวนั้น การ authenticate CLIs *ก็คือ* การ authenticate Terraform
+cloud CLIs ทั้งสามทำหน้าที่สองอย่าง คุณจะใช้แหย่ดู resource ด้วยมือ (`aws s3 ls`, `gcloud storage ls`, `az group list`) แต่ที่สำคัญกว่าคือ **Terraform authenticate ด้วยวิธีเดียวกับที่ CLIs ทำ** login AWS CLI เข้า account แล้ว AWS provider ก็หยิบ credential ชุดนั้นไปใช้ รัน `gcloud auth application-default login` แล้ว Google provider ก็ใช้ตัวนั้น การ authenticate CLIs *ก็คือ* การ authenticate Terraform
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **IaC toolchain ตัวเดียวข้ามสาม cloud เทียบกับ native tool ของแต่ละ cloud (CloudFormation / Deployment Manager / ARM/Bicep):**
 
-- **Pros:** ภาษาเดียว (HCL), workflow เดียว (`plan`/`apply`), mental model เดียว การ abstract provider ทำให้ *รูปทรง* ของโค้ดเหมือนกันไม่ว่าคุณจะคุยกับ AWS หรือ Azure — ซึ่งเป็นสิ่งที่ทำให้คอร์สสาม cloud นี้จัดการไหว
+- **Pros:** ภาษาเดียว (HCL), workflow เดียว (`plan`/`apply`), mental model เดียว การ abstract provider ทำให้ *รูปทรง* ของโค้ดเหมือนกันไม่ว่าคุณจะคุยกับ AWS หรือ Azure — นั่นคือสิ่งที่ทำให้คอร์สสาม cloud นี้จัดการไหว
 - **Cons:** provider ใหม่ได้แค่เท่าที่ maintainer ทำให้เท่านั้น feature ใหม่ล่าสุดของ cloud บางทีก็มาถึง native tool ก่อน และคุณเป็นเจ้าของ toolchain เอง — การติดตั้ง, pin, และ upgrade Terraform กับ providers กลายเป็นงานของคุณแล้ว
 
 **CLI auth อายุสั้น (SSO / ADC / `az login`) เทียบกับ static key อายุยาว:**
@@ -29,7 +29,7 @@ cloud CLIs ทั้งสามทำหน้าที่สองอย่า
 - **Pros:** ไม่มีอะไรถาวรค้างอยู่บน disk credential หมดอายุได้ laptop ที่หลุดจึงไม่ใช่การรั่วแบบถาวร และคุณไม่เคยต้อง paste access key ลงในไฟล์ที่อาจหลุดเข้า git
 - **Cons:** session หมดอายุกลางงานแล้วคุณต้อง auth ใหม่ CI ทำ `az login` แบบ interactive ไม่ได้ Module 12 จึงเปลี่ยนตรงนี้ไปใช้ OIDC federation — แต่สำหรับ local development แบบอายุสั้นคือ default ที่ถูกต้อง
 
-## Set it up
+## ติดตั้ง
 
 ### 1. Install Terraform and Terragrunt
 
@@ -67,7 +67,7 @@ az login
 az account set --subscription "YOUR_SUBSCRIPTION_NAME_OR_ID"
 ```
 
-Google provider อ่าน credential แบบ *application-default* ไม่ใช่ตัวที่ `gcloud auth login` ตั้งให้ CLI — นั่นคือเหตุผลที่คุณต้องรันทั้งสองคำสั่ง สำหรับ Azure จดค่า subscription ID ไว้ azurerm provider ต้องใช้มัน (Module 2 ต่อสายมันเข้าไป)
+Google provider อ่าน credential แบบ *application-default* ไม่ใช่ตัวที่ `gcloud auth login` ตั้งให้ CLI — นั่นคือเหตุผลที่คุณต้องรันทั้งสองคำสั่ง สำหรับ Azure จดค่า subscription ID ไว้ azurerm provider ต้องใช้ค่านี้ (Module 2 จะต่อสายเข้าไป)
 
 ### 4. Set a billing alert on each cloud
 
@@ -84,7 +84,7 @@ gcloud billing budgets create \
 
 AWS Budgets (Billing console → **Budgets** → *Create budget*) และ Azure Cost Management (**Cost Management** → *Budgets*) ตั้งเร็วสุดผ่าน console ของแต่ละเจ้า — monthly cost budget พร้อม email alert ที่ 80–90% ก็เพียงพอ ทำให้ครบทั้งสามเลยตอนนี้
 
-## Verify
+## ตรวจสอบผล
 
 ยืนยันว่าทุก tool ทำงานและทุก identity resolve ได้:
 
@@ -115,9 +115,9 @@ az account show                 # → your Azure subscription JSON
 1. ทำไมการ authenticate cloud CLIs ถึง authenticate Terraform ไปด้วย — provider หยิบ credential มาจากไหน?
 2. `gcloud auth login` กับ `gcloud auth application-default login` ต่างกันอย่างไร และทำไมคอร์สนี้ต้องใช้ทั้งคู่?
 3. ทำไม CLI auth อายุสั้นถึงเป็นตัวเลือกที่ถูกสำหรับ local แต่ผิดสำหรับ CI pipeline ใน Module 12?
-4. สิ่งเดียวที่คุณควรตั้งค่าบนทั้งสาม cloud *ก่อน* provision อะไรคืออะไร และทำไมมันสำคัญกว่าในโปรเจกต์ single-cloud?
+4. สิ่งเดียวที่คุณควรตั้งค่าบนทั้งสาม cloud *ก่อน* provision อะไรคืออะไร และทำไมจึงสำคัญกว่าในโปรเจกต์ single-cloud?
 
-## Recap
+## สรุป
 
 คุณมี Terraform และ Terragrunt ติดตั้งแล้ว, สาม cloud ที่ auth แล้ว, และ billing alert คุ้มกันแต่ละตัว engine กับ credential พร้อม — แต่กองของ tool ยังไม่ใช่โปรเจกต์ ต่อไปเราจะวาง layout ของ repository เพื่อให้ทุก module และ configuration ของทุก cloud มีที่อยู่
 

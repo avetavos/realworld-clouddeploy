@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
 pull request ควรตอบคำถามเดียวก่อนที่ใครจะ approve: **การเปลี่ยนแปลงนี้จะทำอะไรกับสาม cloud?** ฉะนั้นครึ่งแรกของ CI/CD คือ workflow แบบ read-only ที่บนทุก PR รัน `terragrunt run --all plan` กับ tree `live/` ของแต่ละ cloud แล้วโพสต์ผลกลับเป็น comment — หนึ่งอันต่อ cloud
 
@@ -17,17 +17,17 @@ workflow มีสามส่วนที่ขยับ:
 
 พอจบคุณจะได้ `.github/workflows/plan.yml` ที่เปลี่ยน "เชื่อผมเถอะ ไม่มีอะไรหรอก" ให้เป็น diff ที่คุณอ่านได้
 
-## Why
+## ทำไม
 
-`terragrunt plan` คือ safety rail ที่ถูกที่สุดเท่าที่เรามี: มันแสดง set ที่แน่นอนของ add, change และ destroy **ก่อน** ที่อะไรจะเกิดขึ้น บน cloud เดียวคุณคงรันมันด้วยมือ ข้ามสาม cloud การรันด้วยมือคือวิธีที่คุณจะลืมสักตัว — ฉะนั้นเราให้หุ่นยนต์ทำ แบบเดียวกัน ทุกครั้ง บนทุก PR
+`terragrunt plan` คือ safety rail ที่ถูกที่สุดเท่าที่เรามี: เพราะแสดง set ที่แน่นอนของ add, change และ destroy **ก่อน** ที่อะไรจะเกิดขึ้น บน cloud เดียวคุณคงรันด้วยมือ ข้ามสาม cloud การรันด้วยมือคือวิธีที่คุณจะลืมสักตัว — ฉะนั้นเราให้หุ่นยนต์ทำ แบบเดียวกัน ทุกครั้ง บนทุก PR
 
-สองการตัดสินใจกำหนดรูปของ design ข้อแรก plan job เป็น **read-only**: IAM role ที่มัน assume describe และ read state ได้ แต่ create, modify หรือ destroy ไม่ได้ PR จาก fork หรือ merge ที่แย่ ไม่มีวัน mutate infrastructure จากขั้น plan ได้ — สิ่งที่แย่ที่สุดที่มันทำได้คือแสดง plan ให้คุณดู ข้อสอง เราใช้ **OIDC แทน stored key** GitHub สร้าง token ที่ sign แล้วให้แต่ละ run; แต่ละ cloud เชื่อ token นั้นสำหรับ repo และ role ที่เจาะจง ไม่มีอะไรอยู่ยาว ๆ นั่งรอรั่วใน `Secrets`
+สองการตัดสินใจกำหนดรูปของ design ข้อแรก plan job เป็น **read-only**: IAM role ที่ job นี้ assume describe และ read state ได้ แต่ create, modify หรือ destroy ไม่ได้ PR จาก fork หรือ merge ที่แย่ ไม่มีวัน mutate infrastructure จากขั้น plan ได้ — สิ่งที่แย่ที่สุดที่ทำได้คือแสดง plan ให้คุณดู ข้อสอง เราใช้ **OIDC แทน stored key** GitHub สร้าง token ที่ sign แล้วให้แต่ละ run; แต่ละ cloud เชื่อ token นั้นสำหรับ repo และ role ที่เจาะจง ไม่มีอะไรอยู่ยาว ๆ นั่งรอรั่วใน `Secrets`
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **One matrix job per cloud vs. one job that loops all three**
 
-- **Pros:** matrix รันสาม cloud แบบขนาน ฉะนั้น PR ได้ feedback ในเวลาของ cloud ที่ช้าที่สุดตัวเดียว ไม่ใช่ผลรวม plan ของแต่ละ cloud เป็น job ที่แยกกัน มี log ของตัวเอง, credential ของตัวเอง และ PR comment ของตัวเอง — เมื่อ AWS แดงและ GCP เขียว มันเห็นชัดในพริบตา
+- **Pros:** matrix รันสาม cloud แบบขนาน ฉะนั้น PR ได้ feedback ในเวลาของ cloud ที่ช้าที่สุดตัวเดียว ไม่ใช่ผลรวม plan ของแต่ละ cloud เป็น job ที่แยกกัน มี log ของตัวเอง, credential ของตัวเอง และ PR comment ของตัวเอง — เมื่อ AWS แดงและ GCP เขียว ก็เห็นชัดในพริบตา
 - **Cons:** สาม job หมายถึงสาม OIDC trust relationship ที่ต้อง set up และสาม sticky comment บน PR job แบบ loop เดียวจะมี credential เดียวและ comment เดียว แลกกับ runtime แบบ serial และ log ที่พันกัน
 
 **OIDC federation vs. long-lived access keys**
@@ -35,7 +35,7 @@ workflow มีสามส่วนที่ขยับ:
 - **Pros:** ไม่มี secret ที่ต้อง rotate, รั่ว หรือ scope ผิด credential อยู่ได้แค่ไม่กี่นาทีและผูกกับ repo ของคุณและ (ถ้าต้องการ) branch หรือ PR ที่เจาะจง นี่คือ best practice ปัจจุบันบนทั้งสาม cloud
 - **Cons:** ต้อง wiring ล่วงหน้ามากกว่า — identity provider และ role/service-account ต่อ cloud พร้อม trust condition ที่คุณต้องทำให้ถูกเป๊ะ (`sub` claim พิมพ์ผิดง่าย) long-lived key เป็นการ paste ครั้งเดียวลง `Secrets`; OIDC เป็นโปรเจกต์ IAM เล็ก ๆ
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `dependency` blocks need mock outputs for plan
 
@@ -67,7 +67,7 @@ inputs = {
 }
 ```
 
-ถ้าไม่มีตัวนี้ plan บน green-field ล้มเหลวตั้งแต่ PR แรก เมื่อมีมัน `run --all plan` เดินผ่าน dependency graph ทั้งหมดและแสดง diff ที่สมจริง
+ถ้าไม่มีตัวนี้ plan บน green-field ล้มเหลวตั้งแต่ PR แรก เมื่อมีตัวนี้ `run --all plan` เดินผ่าน dependency graph ทั้งหมดและแสดง diff ที่สมจริง
 
 ### 2. `.github/workflows/plan.yml`
 
@@ -157,11 +157,11 @@ jobs:
 
 ### 3. Pin the tool versions
 
-CI drift มีจริง: Terragrunt หรือ Terraform ที่ไม่ pin เปลี่ยน "no changes" ให้กลายเป็น diff ที่ไม่คาดคิดข้ามคืนได้ pin Terragrunt release ในขั้น install (ด้านบน) และ provider version ใน block `required_providers` ของคุณ แล้ว bump มันอย่างตั้งใจใน PR ของมันเอง — ที่ workflow นี้เองจะแสดง blast radius ให้คุณดูก่อน merge
+CI drift มีจริง: Terragrunt หรือ Terraform ที่ไม่ pin เปลี่ยน "no changes" ให้กลายเป็น diff ที่ไม่คาดคิดข้ามคืนได้ pin Terragrunt release ในขั้น install (ด้านบน) และ provider version ใน block `required_providers` ของคุณ แล้ว bump อย่างตั้งใจใน PR แยกของตัวเอง — ที่ workflow นี้เองจะแสดง blast radius ให้คุณดูก่อน merge
 
 หมายเหตุเรื่อง syntax: `terragrunt run --all plan` คือการสะกดปัจจุบัน (`terragrunt run-all plan` แบบเก่ายังใช้ได้แต่ deprecated แล้ว) CloudDeploy ใช้ `run --all` ตลอด; ทั้งสองรูปขับ plan ที่เรียงตาม dependency แบบเดียวกัน
 
-## Verify
+## ตรวจสอบผล
 
 Locally, reproduce exactly what CI does — plan the whole AWS tree:
 
@@ -195,12 +195,12 @@ Plan: 34 to add, 0 to change, 0 to destroy.
 
 ## ตรวจสอบความเข้าใจ
 
-1. ทำไม plan job ถึง assume role แบบ **read-only** และมันป้องกันอุบัติเหตุประเภทไหน?
+1. ทำไม plan job ถึง assume role แบบ **read-only** และป้องกันอุบัติเหตุประเภทไหน?
 2. บน green-field PR `terragrunt run --all plan` จะ error ที่ unit `cluster` ทำไม — และอะไรทำให้ `mock_outputs` เป็นการแก้ที่ถูกต้องแทนที่จะ apply `network` ก่อน?
 3. `fail-fast: false` เปลี่ยนพฤติกรรมของสาม cloud job อย่างไรเมื่อตัวใดตัวหนึ่งล้มเหลว?
 4. บอกสองอย่างที่ OIDC federation ให้คุณแต่ long-lived access key ที่เก็บใน `Secrets` ไม่ให้
 
-## Recap
+## สรุป
 
 ตอนนี้คุณมี PR gate ที่ plan ทั้งสาม cloud แบบเดียวกันทุกครั้ง: matrix บน `[aws, gcp, azure]`, OIDC auth ไปยัง read-only role ต่อ cloud, `terragrunt run --all plan` บน tree `live/` แต่ละอัน และ plan โพสต์กลับเป็น sticky comment ต่อ cloud `mock_outputs` บน `dependency` block ของคุณ (ตั้งไว้ตั้งแต่ [Terragrunt & Remote State](/clouddeploy/th/terragrunt/)) คือสิ่งที่ให้ plan บน green-field สำเร็จ และ unit `live/` เดียวกันที่ [deploy ShopMicro](/clouddeploy/th/deploy-shopmicro/) คือสิ่งที่ plan เดินผ่าน
 

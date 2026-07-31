@@ -5,37 +5,37 @@ sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-slice จริงชิ้นแรกของ tree `live/`: AWS network module เล็ก ๆ แต่ของจริง ขับด้วย Terragrunt **unit** ที่ป้อน input ให้มัน โดยมี `root.hcl` ที่ใช้ร่วมกันคอย generate provider ครั้งเดียวให้ทุก unit จากนั้นเราจะได้เจอ `terragrunt run --all` — apply ทั้ง tree ของ cloud ตามลำดับ dependency ด้วยคำสั่งเดียว
+slice จริงชิ้นแรกของ tree `live/`: AWS network module เล็ก ๆ แต่ของจริง ขับด้วย Terragrunt **unit** ที่ป้อน input เข้าไป โดยมี `root.hcl` ที่ใช้ร่วมกันคอย generate provider ครั้งเดียวให้ทุก unit จากนั้นเราจะได้เจอ `terragrunt run --all` — apply ทั้ง tree ของ cloud ตามลำดับ dependency ด้วยคำสั่งเดียว
 
-นี่คือจุดที่ความซ้ำจาก Module 2 หายไป ปัญหา provider block สามชุดถูกแก้ด้วยการเขียน provider *ครั้งเดียว* แล้ว generate มันไปทุกที่
+นี่คือจุดที่ความซ้ำจาก Module 2 หายไป ปัญหา provider block สามชุดถูกแก้ด้วยการเขียน provider *ครั้งเดียว* แล้ว generate ออกไปทุกที่
 
-## Why
+## ทำไม
 
-Terraform เปล่าบังคับให้คุณเขียนซ้ำข้าม directory: provider block เดียวกัน, backend เดียวกัน, ในทุก folder ที่เก็บ state Terragrunt เอามันออกโดยให้แต่ละ unit `include` `root.hcl` ที่ใช้ร่วมกัน และให้ `terraform { source }` ชี้ไปที่ module ที่อื่นใน repo unit หดเหลือแค่สิ่งเดียวที่ unique จริง — `inputs` ของมัน
+Terraform เปล่าบังคับให้คุณเขียนซ้ำข้าม directory: provider block เดียวกัน, backend เดียวกัน, ในทุก folder ที่เก็บ state Terragrunt ตัดความซ้ำนั้นออก โดยให้แต่ละ unit `include` `root.hcl` ที่ใช้ร่วมกัน และให้ `terraform { source }` ชี้ไปที่ module ที่อื่นใน repo unit หดเหลือแค่สิ่งเดียวที่ unique จริง — `inputs` ของตัวเอง
 
 `terraform { source }` คือหมัดเด็ด แทนที่จะ copy ไฟล์ของ module ลงใน `live/aws/network` unit *อ้างอิง* `modules/aws/network` แล้วส่ง input เข้าไป module เดียว ผู้เรียกหลายราย แต่ละรายมี state ของตัวเอง และเพราะ Terragrunt เข้าใจ link `dependency` ระหว่าง unit `run --all` จึง plan หรือ apply ทั้ง tree ตามลำดับที่ถูกต้องได้
 
 > Recent Terragrunt replaced the old `terragrunt run-all <command>` with `terragrunt run --all <command>`. The old form still works but is deprecated — this course uses `run --all`.
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Terragrunt `include` + `generate` เทียบกับ copy-paste provider และ backend block:**
 
-- **Pros:** เขียน provider และ backend ครั้งเดียวใน `root.hcl` ทุก unit สืบทอดมัน เปลี่ยน region หรือ state bucket ที่เดียวแล้วทุก unit ตามไป ไฟล์ของ unit ยังเล็กและ diff ง่าย
+- **Pros:** เขียน provider และ backend ครั้งเดียวใน `root.hcl` ทุก unit สืบทอดไป เปลี่ยน region หรือ state bucket ที่เดียวแล้วทุก unit ตามไป ไฟล์ของ unit ยังเล็กและ diff ง่าย
 - **Cons:** ชิ้นส่วนเคลื่อนไหวมากขึ้น — `provider.tf` ที่ generate ออกมาโผล่ในแต่ละ unit ตอน apply ซึ่งทำให้คนแปลกใจครั้งแรกที่เห็น คุณแลกความ "ไฟล์นี้มาจากไหน?" นิดหน่อยกับ duplication ที่น้อยลงมาก
 
 **`terragrunt run --all` เทียบกับ apply แต่ละ unit ด้วยมือ:**
 
 - **Pros:** คำสั่งเดียวสร้างทั้ง cloud ตามลำดับ dependency — network, แล้ว cluster, แล้ว data — resolve link `dependency` อัตโนมัติ เหมาะสำหรับการยืนหรือรื้อทั้ง platform
-- **Cons:** blast radius ใหญ่กว่า `run --all apply` แตะทุกอย่างพร้อมกัน การเปลี่ยนที่แย่จึงลงกว้างกว่า ใช้มันอย่างตั้งใจ; สำหรับการปรับจุดเดียว `cd` เข้า unit เดียวแล้ว apply แค่ตัวนั้น
+- **Cons:** blast radius ใหญ่กว่า `run --all apply` แตะทุกอย่างพร้อมกัน การเปลี่ยนที่แย่จึงลงกว้างกว่า ใช้อย่างตั้งใจ; สำหรับการปรับจุดเดียว `cd` เข้า unit เดียวแล้ว apply แค่ตัวนั้น
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `modules/aws/network` — a small, real module
 
-ไม่ใช่ stub — network module ของจริง (ถึงจะ minimal) ที่ Module 4 จะขยายเป็น interface สาม cloud เต็ม มันสร้าง VPC และสอง subnet แล้ว expose output ที่เป็น contract:
+ไม่ใช่ stub — network module ของจริง (ถึงจะ minimal) ที่ Module 4 จะขยายเป็น interface สาม cloud เต็ม module นี้สร้าง VPC และสอง subnet แล้ว expose output ที่เป็น contract:
 
 ```hcl
 # modules/aws/network/main.tf
@@ -66,7 +66,7 @@ output "network_id"         { value = aws_vpc.this.id }
 output "private_subnet_ids" { value = aws_subnet.private[*].id }
 ```
 
-VPC และ subnet ไม่มีค่าใช้จ่ายในการรัน มันจึงปลอดภัยที่จะปล่อยไว้แบบ applied ระหว่างคุณเรียน
+VPC และ subnet ไม่มีค่าใช้จ่ายในการรัน จึงปล่อยไว้แบบ applied ได้อย่างปลอดภัย ระหว่างคุณเรียน
 
 ### 2. `live/aws/root.hcl` — generate the provider once
 
@@ -105,7 +105,7 @@ inputs = {
 }
 ```
 
-นั่นคือ configuration ต่อ cloud ทั้งหมดของ network — ไม่มี provider, ไม่มี backend, ไม่มีโค้ด resource มันมาจาก root และ module ทั้งหมด
+นั่นคือ configuration ต่อ cloud ทั้งหมดของ network — ไม่มี provider, ไม่มี backend, ไม่มีโค้ด resource ทั้งหมดมาจาก root และ module
 
 ### 4. The `dependency` pattern (preview)
 
@@ -136,7 +136,7 @@ inputs = {
 
 `dependency "network"` คือสิ่งที่บอก `run --all` ให้สร้าง network *ก่อน* cluster การต่อสายเดียวกันบนทุก cloud เพราะ interface เหมือนกัน
 
-## Verify
+## ตรวจสอบผล
 
 apply network unit เดี่ยว ๆ ก่อน:
 
@@ -147,7 +147,7 @@ terragrunt plan     # Plan: 3 to add (vpc + 2 subnets), 0 to change, 0 to destro
 terragrunt apply    # Apply complete! Resources: 3 added.
 ```
 
-สังเกตว่า Terragrunt เขียน `provider.tf` ลงใน working directory จาก block `generate` ของ root — คุณไม่เคยเขียนมันเอง ตอนนี้รันทั้ง tree จาก cloud root:
+สังเกตว่า Terragrunt เขียน `provider.tf` ลงใน working directory จาก block `generate` ของ root — คุณไม่เคยเขียนไฟล์นี้เอง ตอนนี้รันทั้ง tree จาก cloud root:
 
 ```bash
 cd live/aws
@@ -161,7 +161,7 @@ Group 1
 The stack at /.../live/aws will be processed in the following order...
 ```
 
-รื้อมันทิ้งเมื่อสำรวจเสร็จ:
+รื้อทิ้งเมื่อสำรวจเสร็จ:
 
 ```bash
 cd live/aws/network
@@ -173,11 +173,11 @@ terragrunt destroy   # Destroy complete! Resources: 3 destroyed.
 **ตรวจสอบความเข้าใจ:**
 
 1. สาม block ใน Terragrunt unit คืออะไร และแต่ละอันให้อะไร?
-2. `provider.tf` ใน working directory ของ unit มาจากไหน และทำไมมันดีกว่าการเขียนหนึ่งตัวต่อ unit?
+2. `provider.tf` ใน working directory ของ unit มาจากไหน และทำไมจึงดีกว่าการเขียนหนึ่งตัวต่อ unit?
 3. `dependency "network"` ทำอะไรให้ `terragrunt run --all` และทำไมการต่อสายถึงเหมือนกันได้บนทั้งสาม cloud?
-4. เมื่อไรคุณควร `cd` เข้า unit เดียวแล้ว apply มัน แทนที่จะคว้า `run --all`?
+4. เมื่อไรคุณควร `cd` เข้า unit เดียวแล้ว apply แค่ตัวนั้น แทนที่จะคว้า `run --all`?
 
-## Recap
+## สรุป
 
 คุณเปลี่ยน module ที่ reusable ให้เป็น deployment จริงด้วย Terragrunt unit สามบล็อก, generate provider ครั้งเดียวสำหรับทั้ง cloud, และ apply ทั้ง tree ด้วย `run --all` ไฟล์ของ unit เล็กเพราะทุกอย่างที่แชร์อยู่ใน `root.hcl` — ทุกอย่างยกเว้นสิ่งเดียวที่เราจงใจปล่อยเป็น local: state ต่อไปเราจะย้าย state ไปที่ remote backend ของแต่ละ cloud แล้วเพิ่ม locking
 

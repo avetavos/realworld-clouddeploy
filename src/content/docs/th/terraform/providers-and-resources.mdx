@@ -5,19 +5,19 @@ sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
 resource เล็ก ๆ หนึ่งตัวบนแต่ละ cloud ด้วย Terraform ล้วน ๆ — ยังไม่มี Terragrunt S3 bucket บน AWS, Cloud Storage bucket บน GCP, และ resource group บน Azure แต่ละตัวเกือบฟรี, destroy ได้เร็ว, และเพียงพอจะซ้อมทั้ง loop: ประกาศ **provider**, ประกาศ **resource**, แล้ว `init`, `plan`, และ `apply`
 
 เราใช้ Terraform เปล่า ๆ โดยตั้งใจ การได้เห็น provider block เกือบเหมือนกันสามชุดด้วยมือคือสิ่งที่ทำให้ Terragrunt ใน Module 3 รู้สึกเหมือนโล่งอกมากกว่าจะเป็นเรื่องลึกลับ
 
-## Why
+## ทำไม
 
-**provider** คือ plugin ที่แปล HCL ให้เป็น API ของ cloud — `aws`, `google`, `azurerm` คุณ pin version มันใน block `required_providers` เพื่อให้เพื่อนร่วมงาน (หรือ CI run อีกหกเดือนข้างหน้า) ได้พฤติกรรมเดียวกับคุณ แล้วตั้งค่ามัน (region, project, subscription) ใน block `provider` **resource** คือสิ่งหนึ่งที่ provider นั้นจัดการ: bucket, network, database
+**provider** คือ plugin ที่แปล HCL ให้เป็น API ของ cloud — `aws`, `google`, `azurerm` คุณ pin version ไว้ใน block `required_providers` เพื่อให้เพื่อนร่วมงาน (หรือ CI run อีกหกเดือนข้างหน้า) ได้พฤติกรรมเดียวกับคุณ แล้วตั้งค่า (region, project, subscription) ใน block `provider` **resource** คือสิ่งหนึ่งที่ provider นั้นจัดการ: bucket, network, database
 
-loop `init`/`plan`/`apply` คือหัวใจที่เต้นของ Terraform `init` download provider ที่ pin ไว้; `plan` diff config ของคุณกับความจริงแล้วแสดงว่าอะไรจะเปลี่ยนบ้าง; `apply` ทำให้มันเกิดขึ้น คุณจะรัน loop นั้นเป็นพัน ๆ ครั้ง — หัดเชื่อ plan และอย่า apply plan ที่คุณยังไม่ได้อ่าน
+loop `init`/`plan`/`apply` คือหัวใจที่เต้นของ Terraform `init` download provider ที่ pin ไว้; `plan` diff config ของคุณกับความจริงแล้วแสดงว่าอะไรจะเปลี่ยนบ้าง; `apply` ลงมือทำให้เกิดขึ้นจริง คุณจะรัน loop นั้นเป็นพัน ๆ ครั้ง — หัดเชื่อ plan และอย่า apply plan ที่คุณยังไม่ได้อ่าน
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **pin provider ด้วย `~>` เทียบกับเอาอะไรก็ตามที่ใหม่สุด:**
 
@@ -27,11 +27,11 @@ loop `init`/`plan`/`apply` คือหัวใจที่เต้นขอ�
 **Terraform เปล่าต่อ cloud (บทนี้) เทียบกับกระโดดไป Terragrunt เลย:**
 
 - **Pros:** คุณเรียน engine ตรง ๆ — provider, state, plan — โดยไม่มีอะไรคั่นระหว่างคุณกับ API เมื่อมีอะไรพังทีหลัง คุณรู้ว่าต้องโทษชั้นไหน
-- **Cons:** มันซ้ำซาก provider block สามชุด, backend สามชุด, setting เดียวกันสามสำเนา ความซ้ำนั้นคือปัญหาที่ Terragrunt มีอยู่เพื่อแก้ และคุณจะรู้สึกมันตอนจบ module นี้
+- **Cons:** ซ้ำซาก — provider block สามชุด, backend สามชุด, setting เดียวกันสามสำเนา ความซ้ำนั้นคือปัญหาที่ Terragrunt มีอยู่เพื่อแก้ และคุณจะรู้สึกได้ตอนจบ module นี้
 
-## Set it up
+## ติดตั้ง
 
-พวกนี้เป็นการทดลองใช้แล้วทิ้ง เก็บมันไว้นอก tree จริง — directory `scratch/` ที่คุณจะลบก่อน Module 4 สร้าง module จริง
+พวกนี้เป็นการทดลองใช้แล้วทิ้ง เก็บไว้นอก tree จริง — directory `scratch/` ที่คุณจะลบก่อน Module 4 สร้าง module จริง
 
 ### 1. `scratch/aws/main.tf` — the AWS provider + an S3 bucket
 
@@ -87,7 +87,7 @@ resource "google_storage_bucket" "first" {
 
 ### 3. `scratch/azure/main.tf` — the azurerm provider + a resource group
 
-azurerm provider v4 ต้องมี block `features {}` และ subscription provider อ่าน `ARM_SUBSCRIPTION_ID` จาก environment คุณจึงไม่ต้อง hardcode มัน:
+azurerm provider v4 ต้องมี block `features {}` และ subscription provider อ่าน `ARM_SUBSCRIPTION_ID` จาก environment คุณจึงไม่ต้อง hardcode ไว้:
 
 ```hcl
 terraform {
@@ -114,7 +114,7 @@ export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
 
 ทุกตัวในนี้ authenticate ด้วย CLI credential ที่คุณตั้งไว้ใน Module 1 — ไม่มี key ในไฟล์พวกนี้เลย
 
-## Verify
+## ตรวจสอบผล
 
 รัน loop ในแต่ละ directory แสดง AWS ไว้; GCP และ Azure ใช้คำสั่งเหมือนกัน:
 
@@ -139,7 +139,7 @@ gcloud storage buckets list --filter="name:clouddeploy-first"
 az group show --name clouddeploy-first --query name -o tsv
 ```
 
-แล้วรื้อมันทิ้งเพื่อไม่ให้อะไรค้างบนบิล:
+แล้วรื้อทิ้งเพื่อไม่ให้อะไรค้างบนบิล:
 
 ```bash
 terraform destroy   # Destroy complete! Resources: 2 destroyed.
@@ -154,8 +154,8 @@ terraform destroy   # Destroy complete! Resources: 2 destroyed.
 3. `terraform plan` แสดงอะไรให้คุณ และทำไมคุณไม่ควร `apply` plan ที่คุณยังไม่ได้อ่าน?
 4. ไม่มีไฟล์ไหนในนี้เก็บ credential ของ cloud เลย — แล้วแต่ละ provider authenticate อย่างไร?
 
-## Recap
+## สรุป
 
-คุณตั้งค่า provider ทั้งสามแล้ว, สร้างและ destroy resource ตัวแรกบนแต่ละ cloud, และรัน loop `init`/`plan`/`apply` คุณยังได้รู้สึกถึงความซ้ำ — provider block สามชุดที่ต่างกันแค่รายละเอียด ก่อนเราจะแก้มันด้วย Terragrunt เราต้องเข้าใจสิ่งที่ Terraform จำไว้ระหว่าง apply แต่ละครั้งก่อน: state ต่อไปคือ state, variable, และ output
+คุณตั้งค่า provider ทั้งสามแล้ว, สร้างและ destroy resource ตัวแรกบนแต่ละ cloud, และรัน loop `init`/`plan`/`apply` คุณยังได้รู้สึกถึงความซ้ำ — provider block สามชุดที่ต่างกันแค่รายละเอียด ก่อนเราจะแก้ด้วย Terragrunt เราต้องเข้าใจสิ่งที่ Terraform จำไว้ระหว่าง apply แต่ละครั้งก่อน: state ต่อไปคือ state, variable, และ output
 
 Next: [State, variables & outputs →](/clouddeploy/th/terraform/state-variables-outputs/)

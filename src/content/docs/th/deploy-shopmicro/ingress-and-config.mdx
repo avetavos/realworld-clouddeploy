@@ -5,11 +5,11 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-[บทก่อนหน้า](/clouddeploy/th/deploy-shopmicro/helm-release/) ทำให้ pod ของ ShopMicro `Running` บนทั้งสาม cluster — แต่ยังไม่มีอะไรจากนอก cluster เข้าถึงมันได้ บทนี้เปิดประตู: **ingress** ที่วางไว้หน้า gateway ของ ShopMicro บนแต่ละ cloud, **DNS** ที่ชี้มาที่มัน และชุดเล็ก ๆ ของ **value และ secret ต่อ cloud** ที่ chart ต้องใช้เพื่อให้เข้าถึงได้
+[บทก่อนหน้า](/clouddeploy/th/deploy-shopmicro/helm-release/) ทำให้ pod ของ ShopMicro `Running` บนทั้งสาม cluster — แต่ยังไม่มีอะไรจากนอก cluster เข้าถึงได้ บทนี้เปิดประตู: **ingress** ที่วางไว้หน้า gateway ของ ShopMicro บนแต่ละ cloud, **DNS** ที่ชี้มาที่ ingress นั้น และชุดเล็ก ๆ ของ **value และ secret ต่อ cloud** ที่ chart ต้องใช้เพื่อให้เข้าถึงได้
 
-จุดยากคือ "ingress" เป็นที่ที่ cloud แตกต่างกันมากที่สุด object `Ingress` ของ Kubernetes นั้น portable แต่ controller ที่เติมเต็มมัน — และ load balancer ที่มัน provision — เฉพาะ cloud:
+จุดยากคือ "ingress" เป็นที่ที่ cloud แตกต่างกันมากที่สุด object `Ingress` ของ Kubernetes นั้น portable แต่ controller ที่เติมเต็ม — และ load balancer ที่ provision ขึ้นมา — เป็นของเฉพาะ cloud:
 
 - **AWS:** AWS Load Balancer Controller เปลี่ยน `Ingress` ให้เป็น **ALB** (`ingressClassName: alb`, annotation `alb.ingress.kubernetes.io/*`)
 - **GCP:** ingress ในตัวของ GKE เปลี่ยน `Ingress` ให้เป็น **GCE external HTTP(S) load balancer** (`ingressClassName: gce`)
@@ -17,15 +17,15 @@ sidebar:
 
 เราขับเคลื่อนทั้งหมดผ่าน `helm_release` เดียวกัน — ไฟล์ value ต่อ cloud ที่ layer ทับ default ของ chart — เพื่อให้ส่วนที่แตกต่างถูกกักไว้ใน `charts/shopmicro/values-<cloud>.yaml`
 
-## Why
+## ทำไม
 
-**ทำไมปล่อยให้ native controller ของแต่ละ cloud เป็นเจ้าของ ingress แทนที่จะติดตั้ง ingress-nginx ทุกที่?** คุณ *ทำได้* ที่จะรัน ingress-nginx บนทั้งสามแล้วได้ ingress class เดียวเหมือนกัน — และนั่นเป็นตัวเลือกที่ถูกต้อง แต่ native controller integrate เข้ากับ certificate management, WAF และ health checking ของแต่ละ cloud และมันคือสิ่งที่ทีมบน cloud นั้นจะ operate จริง จุดยืนที่ซื่อตรงของ CloudDeploy คือใช้ประตูหน้าของแต่ละ cloud แล้ว *ตั้งชื่อ* ความต่าง แทนที่จะกลบมันด้วย proxy แบบ lowest-common-denominator รูปร่างของ `Ingress` spec ยังเหมือนเดิม มีแค่ class และ annotation ที่เปลี่ยน
+**ทำไมปล่อยให้ native controller ของแต่ละ cloud เป็นเจ้าของ ingress แทนที่จะติดตั้ง ingress-nginx ทุกที่?** คุณ *ทำได้* ที่จะรัน ingress-nginx บนทั้งสามแล้วได้ ingress class เดียวเหมือนกัน — และนั่นเป็นตัวเลือกที่ถูกต้อง แต่ native controller integrate เข้ากับ certificate management, WAF และ health checking ของแต่ละ cloud และเป็นสิ่งที่ทีมบน cloud นั้นจะ operate จริง จุดยืนที่ซื่อตรงของ CloudDeploy คือใช้ประตูหน้าของแต่ละ cloud แล้ว *ตั้งชื่อ* ความต่าง แทนที่จะกลบด้วย proxy แบบ lowest-common-denominator รูปร่างของ `Ingress` spec ยังเหมือนเดิม มีแค่ class และ annotation ที่เปลี่ยน
 
 **ทำไมใช้ไฟล์ value ต่อ cloud แทนที่จะเป็น block `set` กองใหญ่?** ingress annotation ยาวและเฉพาะ cloud การร้อย key `alb.ingress.kubernetes.io/*` เป็นโหล ๆ ผ่าน list `set` ของ Terraform นั้นรกและ review ยาก ไฟล์ `values-aws.yaml` ที่ layer ผ่าน argument `values` ของ release เก็บ config เฉพาะ cloud ไว้เป็น YAML ที่อ่านง่าย version ไว้ข้าง chart และ diff ได้
 
-**ทำไม manage secret ของ app เป็น Kubernetes `Secret` ใน Terraform?** ShopMicro ต้องการมากกว่า DB URL — JWT signing key อาจมี session secret สิ่งเหล่านั้นไม่ควรถูกฝังลงใน value การสร้างมันเป็น `kubernetes_secret` (จาก sensitive variable) แล้วอ้างอิงมันด้วยชื่อใน chart จะเก็บ secret ไว้นอก manifest ที่ render และนอก plan output
+**ทำไม manage secret ของ app เป็น Kubernetes `Secret` ใน Terraform?** ShopMicro ต้องการมากกว่า DB URL — JWT signing key อาจมี session secret สิ่งเหล่านั้นไม่ควรฝังลงใน value การสร้างเป็น `kubernetes_secret` (จาก sensitive variable) แล้วอ้างอิงด้วยชื่อใน chart จะเก็บ secret ไว้นอก manifest ที่ render และนอก plan output
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Native per-cloud ingress (ALB / GCE / AGIC) vs a single portable ingress-nginx on all three**
 
@@ -37,7 +37,7 @@ sidebar:
 - **Pros:** config เฉพาะ cloud ถูกแยก อ่านง่าย และ review ได้ base chart ยังสะอาด
 - **Cons:** มีสามไฟล์ที่ต้องรักษาให้ตรงกัน และ change ที่ใช้ร่วมต้องทำในแต่ละไฟล์
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `charts/shopmicro/values-aws.yaml` (ALB ingress)
 
@@ -99,7 +99,7 @@ ingress:
 
 ### 4. Load the values file and the app secret in each unit
 
-กลับมาที่ `live/<cloud>/shopmicro/terragrunt.hcl` ชี้ release ไปที่ไฟล์ value ที่ถูกต้องแล้วเพิ่ม app secret ก่อนอื่นสอนให้ module รับมันได้:
+กลับมาที่ `live/<cloud>/shopmicro/terragrunt.hcl` ชี้ release ไปที่ไฟล์ value ที่ถูกต้องแล้วเพิ่ม app secret ก่อนอื่นสอนให้ module รับค่านั้นได้:
 
 ```hcl
 # modules/shopmicro/variables.tf  (additions)
@@ -147,7 +147,7 @@ inputs = {
 
 ### 5. DNS
 
-แต่ละ ingress expose address — ALB DNS name, GCE static IP, Application Gateway IP ชี้ hostname ของคุณมาที่มัน path ที่สอนได้และชัดเจนคือ record เดียวต่อ cloud ใน DNS provider ของคุณ:
+แต่ละ ingress expose address — ALB DNS name, GCE static IP, Application Gateway IP ชี้ hostname ของคุณมาที่ address นั้น path ที่สอนได้และชัดเจนคือ record เดียวต่อ cloud ใน DNS provider ของคุณ:
 
 ```text
 shop.aws.example.com    CNAME  k8s-shopmicro-abc123.us-east-1.elb.amazonaws.com
@@ -155,9 +155,9 @@ shop.gcp.example.com    A      34.120.0.0     # the reserved shopmicro-ip
 shop.azure.example.com  A      20.62.0.0      # the Application Gateway public IP
 ```
 
-ใน fleet จริงคุณจะ automate สิ่งนี้ด้วย `external-dns` ที่เฝ้าดู object `Ingress` แล้วเขียน record เหล่านี้ให้คุณ — แต่การทำมันด้วยมือครั้งหนึ่งทำให้ mapping จาก ingress ไปยัง hostname เป็นรูปธรรม
+ใน fleet จริงคุณจะ automate สิ่งนี้ด้วย `external-dns` ที่เฝ้าดู object `Ingress` แล้วเขียน record เหล่านี้ให้คุณ — แต่การทำด้วยมือครั้งหนึ่งทำให้ mapping จาก ingress ไปยัง hostname เป็นรูปธรรม
 
-## Verify
+## ตรวจสอบผล
 
 apply unit ที่อัปเดตแล้วอ่าน ingress กลับมา field address คือสิ่งที่ DNS ชี้ไป:
 
@@ -182,7 +182,7 @@ curl -sS https://shop.aws.example.com/healthz
 {"status":"ok"}
 ```
 
-`200` พร้อม `ok` หมายความว่า request เดินทาง ingress → gateway → service → pod และ ShopMicro เข้าถึงได้จาก public internet ถ้าคุณได้ `502`/`503` แสดงว่า load balancer ขึ้นแล้วแต่เป้าหมายของมัน (gateway service) ยังไม่ healthy — เช็ก event ของ ingress และ gateway pod:
+`200` พร้อม `ok` หมายความว่า request เดินทาง ingress → gateway → service → pod และ ShopMicro เข้าถึงได้จาก public internet ถ้าคุณได้ `502`/`503` แสดงว่า load balancer ขึ้นแล้วแต่เป้าหมาย (gateway service) ยังไม่ healthy — เช็ก event ของ ingress และ gateway pod:
 
 ```bash
 kubectl describe ingress shopmicro -n shopmicro
@@ -193,13 +193,13 @@ kubectl get pods -n shopmicro
 
 **ตรวจสอบความเข้าใจ:**
 
-1. object `Ingress` ของ `Kubernetes` นั้น portable แต่ ShopMicro ต้องการมันคนละตัวต่อ cloud อะไรที่ portable เกี่ยวกับมัน และอะไรที่ไม่?
+1. object `Ingress` ของ `Kubernetes` นั้น portable แต่ ShopMicro ต้องใช้คนละตัวต่อ cloud อะไรที่ portable และอะไรที่ไม่?
 2. ทำไมวาง ingress annotation ในไฟล์ `values-<cloud>.yaml` แทนที่จะเป็น block `set` ของ Terraform?
-3. ทำไมสร้าง JWT secret เป็น `kubernetes_secret` แทนที่จะส่งมันเป็น chart value ธรรมดา?
-4. `external-dns` automate อะไรที่คุณทำด้วยมือตรงนี้ และมันเฝ้าดูอะไรเพื่อทำสิ่งนั้น?
+3. ทำไมสร้าง JWT secret เป็น `kubernetes_secret` แทนที่จะส่งเป็น chart value ธรรมดา?
+4. `external-dns` automate อะไรที่คุณทำด้วยมือตรงนี้ และเฝ้าดูอะไรเพื่อทำสิ่งนั้น?
 
-## Recap
+## สรุป
 
-ตอนนี้ ShopMicro เข้าถึงได้บนทุก cloud แต่ละตัวผ่านประตูหน้า native ของมัน: ALB บน AWS, GCE load balancer บน GKE, Application Gateway บน Azure — ขับเคลื่อนด้วยไฟล์ `values-<cloud>.yaml` ต่อ cloud ที่ layer ทับ chart เดียวกัน โดย app secret ถูก manage เป็น Kubernetes secret และ DNS ชี้ไปที่ address ของแต่ละ ingress รูปร่าง `Ingress` ที่ portable ยังคงที่ มีแค่ class และ annotation ที่เปลี่ยน และความต่างเหล่านั้นถูกกักไว้ในสามไฟล์เล็ก ๆ
+ตอนนี้ ShopMicro เข้าถึงได้บนทุก cloud แต่ละตัวผ่านประตูหน้า native ของตัวเอง: ALB บน AWS, GCE load balancer บน GKE, Application Gateway บน Azure — ขับเคลื่อนด้วยไฟล์ `values-<cloud>.yaml` ต่อ cloud ที่ layer ทับ chart เดียวกัน โดย app secret ถูก manage เป็น Kubernetes secret และ DNS ชี้ไปที่ address ของแต่ละ ingress รูปร่าง `Ingress` ที่ portable ยังคงที่ มีแค่ class และ annotation ที่เปลี่ยน และความต่างเหล่านั้นถูกกักไว้ในสามไฟล์เล็ก ๆ
 
 platform รัน workload จริงบนสาม cloud สิ่งถัดไปที่ระบบ production ต้องการคือการ *เห็น* ตัวเอง ไปที่ [Observability with Datadog →](/clouddeploy/th/datadog/) ที่ Datadog agent เริ่มเก็บ metric, trace และ log ของ ShopMicro ข้ามทุก cluster

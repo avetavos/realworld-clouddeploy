@@ -5,21 +5,21 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
 block `remote_state` ใน `root.hcl` ของแต่ละ cloud — ชิ้นที่ย้าย state ออกจาก laptop ของคุณเข้าไปที่ S3, GCS, และ Azure Blob Storage แต่ละตัวมี locking เพื่อไม่ให้ apply สองครั้งชนกัน เราจะใช้ `path_relative_to_include()` เพื่อให้ state ของทุก unit ลงจอดที่ path ที่สะท้อน filesystem แล้ว generate provider ที่ถูกต้องต่อ cloud
 
 นี่ปิดฐานของ Terragrunt หลังจากนี้ ทุก module ในคอร์สสืบทอด remote, locked, encrypted state ฟรี ๆ — ชั้น `network`, `cluster`, `data`, และ `iam` ทำงานได้เลย
 
-## Why
+## ทำไม
 
-local state สอบตกทั้งสองข้อจาก Module 2: มันแชร์ไม่ได้และไม่ encrypt remote state แก้ทั้งคู่ state อยู่ใน cloud bucket, encrypt at rest; **locking** ทำให้แน่ใจว่าขณะที่ `apply` หนึ่งถือ lock อยู่ อีกตัวจะรอแทนที่จะทำไฟล์พัง นั่นคือสิ่งที่ให้เพื่อนร่วมทีม — หรือ CI job — apply ได้อย่างปลอดภัยโดยไม่ทับคุณ
+local state สอบตกทั้งสองข้อจาก Module 2: แชร์ไม่ได้และไม่ encrypt remote state แก้ทั้งคู่ state อยู่ใน cloud bucket, encrypt at rest; **locking** ทำให้แน่ใจว่าขณะที่ `apply` หนึ่งถือ lock อยู่ อีกตัวจะรอแทนที่จะทำไฟล์พัง นั่นคือสิ่งที่ให้เพื่อนร่วมทีม — หรือ CI job — apply ได้อย่างปลอดภัยโดยไม่ทับคุณ
 
-แต่ละ cloud เก็บ backend **ของตัวเอง**: AWS state ใน S3, GCP state ใน GCS, Azure state ใน Azure Storage นี่ไม่ใช่แค่ความเป็นระเบียบ — มันคือการแยก blast-radius และ data residency ปัญหากับ backend ของ cloud หนึ่งไม่ทำให้อีกสองตัวล่มได้ และ state ของแต่ละ cloud อยู่ใน cloud นั้น
+แต่ละ cloud เก็บ backend **ของตัวเอง**: AWS state ใน S3, GCP state ใน GCS, Azure state ใน Azure Storage นี่ไม่ใช่แค่ความเป็นระเบียบ — แต่คือการแยก blast-radius และ data residency ปัญหากับ backend ของ cloud หนึ่งไม่ทำให้อีกสองตัวล่มได้ และ state ของแต่ละ cloud อยู่ใน cloud นั้น
 
-`path_relative_to_include()` คือฟังก์ชันเล็ก ๆ ที่ทำให้สิ่งนี้ scale มัน return path ของ unit เทียบกับ `root.hcl` ที่มัน include ดังนั้น `live/aws/network` เขียน state ไปที่ `network/terraform.tfstate` และ `live/aws/cluster` ไปที่ `cluster/terraform.tfstate` — อัตโนมัติ โดยไม่ต้องมี backend config ต่อ unit
+`path_relative_to_include()` คือฟังก์ชันเล็ก ๆ ที่ทำให้สิ่งนี้ scale ได้ โดย return path ของ unit เทียบกับ `root.hcl` ที่ include อยู่ ดังนั้น `live/aws/network` เขียน state ไปที่ `network/terraform.tfstate` และ `live/aws/cluster` ไปที่ `cluster/terraform.tfstate` — อัตโนมัติ โดยไม่ต้องมี backend config ต่อ unit
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **remote state พร้อม locking เทียบกับ local state:**
 
@@ -29,13 +29,13 @@ local state สอบตกทั้งสองข้อจาก Module 2: ม
 **แต่ละ cloud เก็บ backend ของตัวเอง เทียบกับ backend กลางตัวเดียวสำหรับทั้งสาม:**
 
 - **Pros:** การแยก — outage หรือ misconfiguration ของ backend หนึ่งกระทบตัวอื่นไม่ได้ — บวก data residency และ IAM ที่อยู่ภายในแต่ละ cloud
-- **Cons:** สาม backend ต้องสร้างและ secure แทนที่จะเป็นตัวเดียว เรายอมรับมัน: การรวม state ของสาม cloud ไว้ที่ provider เดียวเท่ากับยื่นกุญแจของทั้ง platform ให้ provider นั้น ซึ่งขัดกับจุดประสงค์ของ multi-cloud
+- **Cons:** สาม backend ต้องสร้างและ secure แทนที่จะเป็นตัวเดียว เรายอมรับ: การรวม state ของสาม cloud ไว้ที่ provider เดียวเท่ากับยื่นกุญแจของทั้ง platform ให้ provider นั้น ซึ่งขัดกับจุดประสงค์ของ multi-cloud
 
-## Set it up
+## ติดตั้ง
 
 ### 1. Bootstrap the backends
 
-backend ต้องมีอยู่ก่อน Terraform จึงจะเก็บ state ในมันได้ — คุณจัดการ state bucket ด้วย state ที่อยู่ในนั้นไม่ได้ สร้างแต่ละตัวครั้งเดียวด้วยมือ:
+backend ต้องมีอยู่ก่อน Terraform จึงจะเก็บ state ลงไปได้ — คุณจัดการ state bucket ด้วย state ที่อยู่ในนั้นไม่ได้ สร้างแต่ละตัวครั้งเดียวด้วยมือ:
 
 ```bash
 # AWS — S3 bucket + DynamoDB lock table
@@ -153,9 +153,9 @@ EOF
 
 รูปทรงเดียวกันบนทุก cloud: block `remote_state` ที่ key มาจาก `path_relative_to_include()` และ block `generate "provider"` ต่างแค่ชนิด backend และ provider
 
-## Verify
+## ตรวจสอบผล
 
-init AWS network unit ใหม่; ตอนนี้ Terragrunt ตั้งค่า S3 backend และถ้าคุณเคยมี local state มันจะเสนอ migrate ให้:
+init AWS network unit ใหม่; ตอนนี้ Terragrunt ตั้งค่า S3 backend และถ้าคุณเคยมี local state Terragrunt จะเสนอ migrate ให้:
 
 ```bash
 cd live/aws/network
@@ -176,7 +176,7 @@ aws s3 ls s3://clouddeploy-tfstate-aws/network/
 # → terraform.tfstate
 ```
 
-พิสูจน์ว่า locking ทำงาน: เริ่ม `apply` แล้วขณะมันรันกลางคัน เปิดตัวที่สองใน terminal อื่น ตัวที่สองปฏิเสธที่จะไปต่อ:
+พิสูจน์ว่า locking ทำงาน: เริ่ม `apply` แล้วขณะที่กำลังรันกลางคัน เปิดตัวที่สองใน terminal อื่น ตัวที่สองปฏิเสธที่จะไปต่อ:
 
 ```text
 Error acquiring the state lock
@@ -196,13 +196,13 @@ terragrunt run --all plan   # No changes across the tree — state matches reali
 
 **ตรวจสอบความเข้าใจ:**
 
-1. ทำไมคุณต้องสร้าง state bucket และ lock table *ก่อน* Terraform จะใช้มันได้ — และคุณจะจัดการมันอย่างไรโดยไม่ติดปัญหาไก่กับไข่?
-2. state locking ป้องกันอะไร และ backend S3, GCS, และ azurerm แต่ละตัวให้มันมาอย่างไร?
-3. `path_relative_to_include()` คำนวณอะไร และทำไมการใช้มันใน state key ถึง scale ไปทั้ง tree ของ unit ได้?
+1. ทำไมคุณต้องสร้าง state bucket และ lock table *ก่อน* Terraform จะใช้ได้ — และคุณจะจัดการอย่างไรโดยไม่ติดปัญหาไก่กับไข่?
+2. state locking ป้องกันอะไร และ backend S3, GCS, และ azurerm แต่ละตัวให้ locking มาอย่างไร?
+3. `path_relative_to_include()` คำนวณอะไร และทำไมการใช้ใน state key ถึง scale ไปทั้ง tree ของ unit ได้?
 4. ให้เหตุผลสองข้อว่าทำไมแต่ละ cloud ถึงเก็บ backend ของตัวเองแทนที่จะรวม state ของทั้งสาม cloud ไว้ที่เดียว
 
-## Recap
+## สรุป
 
-ตอนนี้ state อยู่ใน backend ของแต่ละ cloud, encrypt และ locked, พร้อม key ที่วางให้สะท้อน tree `live/` — เขียนครั้งเดียวใน `root.hcl` แล้วทุก unit สืบทอด นั่นทำให้ฐานของ IaC ครบ: module ที่ reusable, Terragrunt unit แบบ DRY, และ remote locked state บนทั้งสาม cloud ทุก module จากนี้สร้างบนมัน ต่อไปเราจะเขียน infrastructure module จริงตัวแรก — network — แล้วยืนมันขึ้นมาสามแบบหลัง interface เดียว
+ตอนนี้ state อยู่ใน backend ของแต่ละ cloud, encrypt และ locked, พร้อม key ที่วางให้สะท้อน tree `live/` — เขียนครั้งเดียวใน `root.hcl` แล้วทุก unit สืบทอด นั่นทำให้ฐานของ IaC ครบ: module ที่ reusable, Terragrunt unit แบบ DRY, และ remote locked state บนทั้งสาม cloud ทุก module จากนี้สร้างบนฐานนี้ ต่อไปเราจะเขียน infrastructure module จริงตัวแรก — network — แล้วยืนขึ้นมาสามแบบหลัง interface เดียว
 
 Next: [Networking →](/clouddeploy/th/networking/)

@@ -5,13 +5,13 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-EKS implementation พิสูจน์ว่า `cluster` interface ทำงานได้บน cloud เดียว ตอนนี้เรา implement มันอีกสองครั้ง — GKE (`modules/gcp/cluster`) และ AKS (`modules/azure/cluster`) — หลัง output `cluster_name`, `cluster_endpoint`, `cluster_ca` เดียวกัน แล้วทำสิ่งที่ output สามตัวนั้นมีอยู่เพื่อการนั้น: **สร้าง kubeconfig และ config `kubernetes` กับ `helm` provider** เพื่อให้ platform layer (Datadog, Keycloak, GrowthBook) deploy ลงบน cluster ตัวใดตัวหนึ่งในสามได้ด้วย code ที่เหมือนกัน
+EKS implementation พิสูจน์ว่า `cluster` interface ทำงานได้บน cloud เดียว ตอนนี้เรา implement อีกสองครั้ง — GKE (`modules/gcp/cluster`) และ AKS (`modules/azure/cluster`) — หลัง output `cluster_name`, `cluster_endpoint`, `cluster_ca` เดียวกัน แล้วทำสิ่งที่ output สามตัวนั้นมีอยู่เพื่อการนั้น: **สร้าง kubeconfig และ config `kubernetes` กับ `helm` provider** เพื่อให้ platform layer (Datadog, Keycloak, GrowthBook) deploy ลงบน cluster ตัวใดตัวหนึ่งในสามได้ด้วย code ที่เหมือนกัน
 
 เมื่อเราทำเสร็จ `live/gcp/cluster` และ `live/azure/cluster` จะพก *`inputs` block เดียวกัน* กับ `live/aws/cluster` — `node_size` แบบ abstract, network id จาก dependency — และ provider configuration ที่เปลี่ยน cluster output ให้เป็น `helm_release` ที่ทำงานได้จะเป็นรูปทรงเดียวกันบนทุก cloud
 
-## Why
+## ทำไม
 
 managed-Kubernetes service ทั้งสามแยกทางกันมากกว่า network — ในเรื่อง node pool, ในเรื่อง identity, และโดยเฉพาะใน **วิธี authenticate เข้า API server**:
 
@@ -19,9 +19,9 @@ managed-Kubernetes service ทั้งสามแยกทางกันม�
 - **GKE** — auth ผ่าน OAuth token อายุสั้นจาก `google_client_config`
 - **AKS** — auth ผ่าน `kube_config` ของ cluster (certificate) หรือ exec plugin (`kubelogin`) สำหรับ AAD cluster
 
-แต่ *input* ของแต่ละ auth method นั้นคือค่าสามตัวเดียวกัน: ชื่อ cluster, endpoint ของมัน, และ CA ของมัน นั่นคือเหตุผลที่ interface หยุดที่ output สามตัวนั้น — มันคือตัวส่วนร่วมของ "ฉันจะคุยกับ cluster นี้ยังไง" และ provider block ของแต่ละ cloud ประกอบมันต่างกัน คง interface ไว้ที่สาม output แล้ว platform layer ข้างบนไม่เคยรู้ว่าตัวเองอยู่บน cloud ไหน
+แต่ *input* ของแต่ละ auth method นั้นคือค่าสามตัวเดียวกัน: ชื่อ cluster, endpoint, และ CA นั่นคือเหตุผลที่ interface หยุดที่ output สามตัวนั้น — เป็นตัวส่วนร่วมของ "ฉันจะคุยกับ cluster นี้ยังไง" และ provider block ของแต่ละ cloud ประกอบขึ้นต่างกัน คง interface ไว้ที่สาม output แล้ว platform layer ข้างบนไม่เคยรู้ว่าตัวเองอยู่บน cloud ไหน
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Auth ของ provider จาก `cluster_endpoint` + `cluster_ca` + exec/token plugin vs. เขียน kubeconfig file ลง disk**
 
@@ -31,9 +31,9 @@ managed-Kubernetes service ทั้งสามแยกทางกันม�
 **จัดการ node pool เป็น resource แยก (GKE) vs. inline ใน cluster (AKS)**
 
 - **Pros:** `google_container_node_pool` แยกของ GKE ให้คุณเปลี่ยน node ได้โดยไม่ต้องสร้าง control plane ใหม่ — pattern ที่แนะนำ `default_node_pool` แบบ inline ที่ AKS บังคับให้มี คง cluster ขั้นต่ำไว้ใน resource เดียว
-- **Cons:** สอง cloud ไม่เห็นตรงกันเรื่องรูปทรง ดังนั้น code ของ module ต่างกัน interface ซ่อนมันไว้: ทั้งคู่ยังรับ `node_count`/`node_size` และปล่อย output สามตัวเดียวกัน
+- **Cons:** สอง cloud ไม่เห็นตรงกันเรื่องรูปทรง ดังนั้น code ของ module ต่างกัน interface ซ่อนความต่างนั้นไว้: ทั้งคู่ยังรับ `node_count`/`node_size` และปล่อย output สามตัวเดียวกัน
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `modules/gcp/cluster/` — GKE
 
@@ -76,7 +76,7 @@ resource "google_container_node_pool" "this" {
 }
 ```
 
-endpoint ของ GKE กลับมาโดยไม่มี scheme และ CA ของมันอยู่ใต้ `master_auth` `outputs.tf` normalize ให้เข้า interface:
+endpoint ของ GKE กลับมาโดยไม่มี scheme และ CA อยู่ใต้ `master_auth` `outputs.tf` normalize ให้เข้า interface:
 
 ```hcl
 output "cluster_name" {
@@ -232,11 +232,11 @@ provider "kubernetes" {
 }
 ```
 
-ดูสิ่งที่คงที่ข้ามทั้งสาม: `host = var.cluster_endpoint`, `cluster_ca_certificate = base64decode(var.cluster_ca)` มีแค่ stanza ของ auth ที่เปลี่ยน — และมันเปลี่ยน *เพราะ cloud authenticate ต่างกัน* ซึ่งเป็นความต่างจริงที่ interface กลบไม่ได้และไม่ควรพยายาม ทุกอย่างที่ `helm_release` ทำเหนือบรรทัดนี้เหมือนกันหมด
+ดูสิ่งที่คงที่ข้ามทั้งสาม: `host = var.cluster_endpoint`, `cluster_ca_certificate = base64decode(var.cluster_ca)` มีแค่ stanza ของ auth ที่เปลี่ยน — และเปลี่ยน *เพราะ cloud authenticate ต่างกัน* นั่นคือความต่างจริงที่ interface กลบไม่ได้และไม่ควรพยายาม ทุกอย่างที่ `helm_release` ทำเหนือบรรทัดนี้เหมือนกันหมด
 
-## Verify
+## ตรวจสอบผล
 
-Plan cluster แต่ละตัวจาก tree `live/` ของมัน — dependency resolve กับ mock network output บน plan ที่สะอาด:
+Plan cluster แต่ละตัวจาก tree `live/` ของแต่ละตัว — dependency resolve กับ mock network output บน plan ที่สะอาด:
 
 ```bash
 terragrunt run --all plan --working-dir live/gcp
@@ -261,7 +261,7 @@ done
 [ "cluster_ca", "cluster_endpoint", "cluster_name" ]
 ```
 
-ทีนี้บทพิสูจน์จริง — apply cluster, generate kubeconfig ของมัน, แล้วเข้าถึงมันด้วย `kubectl` บน GCP:
+ทีนี้บทพิสูจน์จริง — apply cluster, generate kubeconfig, แล้วเข้าถึงด้วย `kubectl` บน GCP:
 
 ```bash
 cd live/gcp/cluster && terragrunt apply
@@ -280,11 +280,11 @@ node `Ready` ที่เข้าถึงผ่าน kubeconfig ที่ส�
 **ตรวจสอบความเข้าใจ:**
 
 1. provider block ทั้งสามใช้ `host` และ `cluster_ca_certificate` ร่วมกัน แต่ต่างกันที่ stanza เดียว stanza ไหน และทำไมความต่างนั้นถึงเป็นสิ่งเดียวที่ interface ตั้งใจปฏิเสธที่จะซ่อน?
-2. `endpoint` ดิบของ GKE ไม่มี scheme และ AKS expose host ของมันใต้ `kube_config` การ normalize นั้นเกิดที่ไหนเพื่อให้ consumer เห็น `cluster_endpoint` แบบเดียวกัน?
-3. GKE จัดการ node pool ของมันเป็น resource แยกขณะที่ AKS บังคับให้มันเป็น inline `cluster` interface กันความต่างเชิงโครงสร้างนั้นไม่ให้ไปถึง `live/` unit ได้อย่างไร?
+2. `endpoint` ดิบของ GKE ไม่มี scheme และ AKS expose host ไว้ใต้ `kube_config` การ normalize นั้นเกิดที่ไหนเพื่อให้ consumer เห็น `cluster_endpoint` แบบเดียวกัน?
+3. GKE จัดการ node pool เป็น resource แยก ส่วน AKS บังคับให้เป็น inline `cluster` interface กันความต่างเชิงโครงสร้างนั้นไม่ให้ไปถึง `live/` unit ได้อย่างไร?
 4. CI runner fail ตอน config `helm` provider สำหรับ EKS ด้วย "aws: command not found" จาก exec block อธิบายสาเหตุรากและวิธีแก้
 
-## Recap
+## สรุป
 
 เรา implement `cluster` interface ครั้งที่สองและสาม — VPC-native GKE cluster พร้อม node pool ที่จัดการแยก และ AKS cluster พร้อม default pool แบบ inline และ managed identity — หลัง output `cluster_name`, `cluster_endpoint`, `cluster_ca` เดียวกัน แล้วเราเปลี่ยน output สามตัวนั้นให้เป็น kubeconfig และเป็น `kubernetes`/`helm` provider configuration ที่มีความต่างต่อ cloud แค่ auth plugin `live/gcp/cluster` และ `live/azure/cluster` unit ใช้ `inputs` เดียวกันเป๊ะกับ unit ของ AWS และ [Terragrunt](/clouddeploy/th/terragrunt/) จัดลำดับ network-แล้ว-cluster บนทั้งสาม
 

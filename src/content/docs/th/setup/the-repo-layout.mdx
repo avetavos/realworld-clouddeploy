@@ -5,31 +5,31 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
 โครงของทั้งโปรเจกต์: tree `modules/` ของ Terraform แบบ reusable ที่เจาะจงต่อ cloud, tree `live/` ที่มีหนึ่ง directory ต่อ cloud คอยขับ module พวกนั้นผ่าน Terragrunt, บวก `charts/` สำหรับ Helm และ `.github/workflows/` สำหรับ CI ยังไม่มี resource — แค่รูปทรงที่ module บทถัด ๆ ไปจะเติมเข้ามา
 
-layout ไม่ใช่แค่เรื่องหน้าตา มันเข้ารหัสการตัดสินใจที่สำคัญที่สุดของโปรเจกต์: **module อธิบายว่า infrastructure ชิ้นหนึ่ง *คืออะไร*; tree `live/` อธิบายว่ามันรัน *ที่ไหน* และ *ด้วย input อะไร*** แบ่งตรงนี้ให้ถูกแล้วสาม cloud ยังจัดการไหว แบ่งผิดแล้วคุณจะได้ทุกอย่างสามชุด
+layout ไม่ใช่แค่เรื่องหน้าตา แต่เข้ารหัสการตัดสินใจที่สำคัญที่สุดของโปรเจกต์: **module อธิบายว่า infrastructure ชิ้นหนึ่ง *คืออะไร*; tree `live/` อธิบายว่า module นั้นรัน *ที่ไหน* และ *ด้วย input อะไร*** แบ่งตรงนี้ให้ถูกแล้วสาม cloud ยังจัดการไหว แบ่งผิดแล้วคุณจะได้ทุกอย่างสามชุด
 
-## Why
+## ทำไม
 
 Terraform module ตอบคำถาม "network คืออะไร?" ครั้งเดียว โดยเก็บรายละเอียดเจาะจงต่อ cloud ไว้ข้างใน — VPC บน AWS, VNet บน Azure `live/` directory ตอบว่า "cloud ไหน, region ไหน, CIDR ไหน?" การแยกแบบนั้นคือสิ่งที่ทำให้ `live/aws/network`, `live/gcp/network`, และ `live/azure/network` เรียก module *รูปทรงเดียวกัน* ด้วย input ต่างกันได้ แทนที่จะ duplicate โค้ด resource สามครั้ง
 
-Terragrunt คือกาวใน `live/` `root.hcl` ตัวเดียวต่อ cloud เก็บ setting ที่ทุก unit ใช้ร่วมกัน — provider configuration และ remote-state backend — แล้วแต่ละ unit ก็ `include` มัน นั่นคือชัยชนะ DRY ที่ Module 3 จะแกะให้ดู ตรงนี้เราแค่เจียดพื้นที่ไว้ให้มัน
+Terragrunt คือกาวใน `live/` `root.hcl` ตัวเดียวต่อ cloud เก็บ setting ที่ทุก unit ใช้ร่วมกัน — provider configuration และ remote-state backend — แล้วแต่ละ unit ก็ `include` เข้ามา นั่นคือชัยชนะ DRY ที่ Module 3 จะแกะให้ดู ตรงนี้เราแค่เจียดพื้นที่ไว้ให้ก่อน
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **การแบ่ง `modules/` + `live/` เทียบกับ Terraform tree แบน ๆ ตัวเดียวต่อ cloud:**
 
 - **Pros:** module เขียนและ test ครั้งเดียว แล้วนำกลับมาใช้ tree `live/` ผอมอยู่ — ส่วนใหญ่เป็น input กับการต่อสาย dependency — diff ของ "เพิ่ม region ที่สอง" หรือ "ดัน node count" จึงเล็กและอ่านง่าย
-- **Cons:** อ้อมมากขึ้น จะเข้าใจว่า `live/aws/cluster` สร้างอะไรจริง ๆ คุณต้องตาม `source` เข้าไปที่ `modules/aws/cluster` การกระโดดนั้นคือราคาของการ reuse และมันคุ้มทันทีที่คุณมีผู้เรียกมากกว่าหนึ่งราย
+- **Cons:** อ้อมมากขึ้น จะเข้าใจว่า `live/aws/cluster` สร้างอะไรจริง ๆ คุณต้องตาม `source` เข้าไปที่ `modules/aws/cluster` การกระโดดนั้นคือราคาของการ reuse และคุ้มทันทีที่คุณมีผู้เรียกมากกว่าหนึ่งราย
 
 **module directory แยกต่อ cloud (`modules/aws`, `modules/gcp`, `modules/azure`) เทียบกับ module เดียวที่ branch ด้วย `count`/`for_each` ต่อ cloud:**
 
 - **Pros:** implementation ของแต่ละ cloud วิวัฒน์อิสระและอ่านสะอาด — ไฟล์ EKS ไม่พันกับ conditional ของ GKE provider, ชื่อ resource, และพฤติกรรมเฉพาะตัวแยกกันชัด
-- **Cons:** มี duplication จริงบ้างข้ามทั้งสาม (ชื่อ variable, รูปทรง output) เรายอมรับมันโดยตั้งใจ: *interface* เหมือนกัน (ตั้งแต่ Module 4 เป็นต้นไป) ต่างแค่ไส้ใน และไฟล์ที่ชัดเจนดีกว่าไฟล์ที่ฉลาดเกินตัว
+- **Cons:** มี duplication จริงบ้างข้ามทั้งสาม (ชื่อ variable, รูปทรง output) เรายอมรับโดยตั้งใจ: *interface* เหมือนกัน (ตั้งแต่ Module 4 เป็นต้นไป) ต่างแค่ไส้ใน และไฟล์ที่ชัดเจนดีกว่าไฟล์ที่ฉลาดเกินตัว
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `modules/` — reusable, cloud-specific implementations
 
@@ -54,7 +54,7 @@ interface convention (สร้างเต็มใน module บทหลั�
 mkdir -p live/{aws,gcp,azure}/{network,cluster,data,platform,shopmicro}
 ```
 
-- `network`, `cluster`, `data`, `iam` → ชั้นที่เจาะจงต่อ cloud แต่ละตัวเรียก module ของมันใน `modules/<cloud>/`
+- `network`, `cluster`, `data`, `iam` → ชั้นที่เจาะจงต่อ cloud แต่ละตัวเรียก module ของตัวเองใน `modules/<cloud>/`
 - `platform` → ชั้น Helm ที่ *เป็นกลาง* ต่อ cloud (Datadog, Keycloak, GrowthBook)
 - `shopmicro` → workload คือ `helm_release` ของ ShopMicro chart
 
@@ -97,7 +97,7 @@ mkdir -p charts .github/workflows
 
 `charts/` เก็บ Helm values และ ShopMicro chart; `.github/workflows/` เก็บ CI/CD จาก Module 12 ตอนนี้ว่างเปล่า — เป็น placeholder เพื่อให้โครงสร้างครบ
 
-## Verify
+## ตรวจสอบผล
 
 ยืนยันว่า tree มีอยู่และ root parse ได้:
 
@@ -136,9 +136,9 @@ terragrunt hcl fmt --check     # exits 0 if root.hcl is well-formatted
 1. อธิบายอย่างละหนึ่งประโยค: `modules/` directory เป็นเจ้าของอะไร และ `live/` directory เป็นเจ้าของอะไร?
 2. ทำไมการเก็บ *interface* ของ module ให้เหมือนกันข้าม cloud ถึงสำคัญกว่าการเก็บ implementation ให้เหมือนกัน?
 3. "unit" ใน tree `live/` คืออะไร และทำไมแต่ละตัวถึงได้ `terragrunt.hcl` ของตัวเอง?
-4. `root.hcl` รวมศูนย์ setting สองตัวไหนให้ทุก unit ใน cloud และถ้าไม่มีมันคุณต้อง copy-paste อะไร?
+4. `root.hcl` รวมศูนย์ setting สองตัวไหนให้ทุก unit ใน cloud และถ้าไม่มี คุณต้อง copy-paste อะไร?
 
-## Recap
+## สรุป
 
 ตอนนี้ repository มีที่อยู่ให้ทุก module, live configuration ของทุก cloud, Helm charts, และ CI การแบ่ง `modules/` เทียบกับ `live/` — *อะไร* เทียบกับ *ที่ไหน* — คือกระดูกสันหลังที่ทุกอย่างเกาะ ต่อไปเราจะทิ้งโครงไว้ข้างหลังแล้วให้ Terraform ทำอะไรสักอย่างจริง ๆ: provider, resource ตัวแรกบนแต่ละ cloud, และ loop `init`/`plan`/`apply`
 

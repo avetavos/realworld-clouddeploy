@@ -5,31 +5,31 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-[GrowthBook รันอยู่](/clouddeploy/th/growthbook/deploy-growthbook/) และคุณมี SDK connection key แล้ว ตอนนี้เราทำให้มันทำอะไรสักอย่าง: gate feature จริงของ ShopMicro ไว้หลัง flag แล้วพิสูจน์ว่าคุณพลิกมันจาก UI ได้โดยไม่แตะ deployment
+[GrowthBook รันอยู่](/clouddeploy/th/growthbook/deploy-growthbook/) และคุณมี SDK connection key แล้ว ตอนนี้เราจะเอามาใช้จริง: gate feature จริงของ ShopMicro ไว้หลัง flag แล้วพิสูจน์ว่าคุณพลิกจาก UI ได้โดยไม่แตะ deployment
 
 เราต่อ **GrowthBook Go SDK** เข้ากับ service ของ ShopMicro (products service ที่ขับ storefront), นิยาม boolean flag `shopmicro-recommendations` แล้วห่อ panel "recommended products" ไว้ใน `EvalFeature` check SDK stream การเปลี่ยนแปลงของ flag ผ่าน SSE ฉะนั้นการ toggle flag ใน GrowthBook พลิก behaviour บน pod ที่ live อยู่ภายในไม่กี่วินาที — ไม่ต้อง build ไม่ต้อง rollout
 
-## Why
+## ทำไม
 
 ทั้งหมดของ flag คือการ decouple: การตัดสินใจว่า feature *เปิดหรือไม่* ย้ายออกจาก deploy pipeline ไปอยู่ใน control plane ตอน runtime นั่นคือสิ่งที่ให้คุณ dark-launch code, ramp feature ไปที่ 10% ของ user หรือ kill feature ที่ทำงานผิดได้ภายในไม่กี่วินาทีแทนที่จะรอ rollback
 
 การใช้ **streaming (SSE) data source** ของ GrowthBook แทน polling หมายความว่า pod ถือ connection ที่เปิดค้างไว้กับ API ภายใน cluster และได้รับการเปลี่ยนแปลงที่ถูก push มาทันทีที่เกิดขึ้น เมื่อรวมกับ [in-cluster API URL](/clouddeploy/th/growthbook/deploy-growthbook/) จากบทที่แล้ว การ evaluate flag เป็น check ในเครื่อง เร็ว และอยู่ใน process — ไม่มี network hop ต่อ request ไปหา flag service
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **SDK-evaluated flags (in-process) vs. an API call per decision**
 
-- **Pros:** การ evaluate เป็น lookup ใน memory ฉะนั้นแทบไม่มีต้นทุนต่อ request; SDK cache ruleset ทั้งชุดและ update มันผ่าน SSE; service ยังทำงานต่อด้วย ruleset ล่าสุดที่รู้แม้ GrowthBook จะสะดุด
-- **Cons:** แต่ละ pod ถือ rule สำเนาของตัวเองและ SSE connection ของตัวเอง; มีช่วง propagation เล็ก ๆ ระหว่างการ toggle ใน UI กับการที่ทุก pod เห็นมัน API call ต่อ decision เข้าใจง่ายกว่าแต่เพิ่ม latency และสร้าง dependency แข็ง ๆ ว่า flag service ต้องขึ้นอยู่
+- **Pros:** การ evaluate เป็น lookup ใน memory ฉะนั้นแทบไม่มีต้นทุนต่อ request; SDK cache ruleset ทั้งชุดแล้ว update ผ่าน SSE; service ยังทำงานต่อด้วย ruleset ล่าสุดที่รู้แม้ GrowthBook จะสะดุด
+- **Cons:** แต่ละ pod ถือ rule สำเนาของตัวเองและ SSE connection ของตัวเอง; มีช่วง propagation เล็ก ๆ ระหว่างการ toggle ใน UI กับตอนที่ทุก pod เห็นค่าใหม่ API call ต่อ decision เข้าใจง่ายกว่าแต่เพิ่ม latency และสร้าง dependency แข็ง ๆ ว่า flag service ต้องขึ้นอยู่
 
 **Flag at the service vs. flag at the gateway/frontend**
 
-- **Pros (service):** service เป็นเจ้าของทั้ง feature และ flag พร้อมกัน ฉะนั้น gate อยู่ติดกับ code ที่มันควบคุมและใช้ user attribute จริง (id, plan, region) สำหรับ targeting ได้
+- **Pros (service):** service เป็นเจ้าของทั้ง feature และ flag พร้อมกัน ฉะนั้น gate อยู่ติดกับ code ที่ควบคุมอยู่และใช้ user attribute จริง (id, plan, region) สำหรับ targeting ได้
 - **Cons (service):** ทุก service ที่ gate feature ต้องต่อ SDK เข้าไป การ flag ที่ frontend มี integration point น้อยกว่าแต่ gate ได้แค่สิ่งที่ frontend เห็น และ ship flag logic ไปที่ browser
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `go.mod`
 
@@ -95,7 +95,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-เมื่อ flag ปิด `Recommendations` ว่างและ panel ไม่ render เมื่อมันเปิด storefront แสดง recommended products ไม่มี code path อื่นเปลี่ยนเลย
+เมื่อ flag ปิด `Recommendations` ว่างและ panel ไม่ render เมื่อเปิด storefront จะแสดง recommended products ไม่มี code path อื่นเปลี่ยนเลย
 
 ### 4. `charts/shopmicro/values.yaml`
 
@@ -113,9 +113,9 @@ products:
           key: client-key
 ```
 
-unit `live/<cloud>/shopmicro/terragrunt.hcl` ส่งค่าพวกนี้ผ่านไปต่อ cloud — API host เป็น address ของ Service ฉะนั้นมันเหมือนกันบนทุก cluster
+unit `live/<cloud>/shopmicro/terragrunt.hcl` ส่งค่าพวกนี้ผ่านไปต่อ cloud — API host เป็น address ของ Service จึงเหมือนกันบนทุก cluster
 
-## Verify
+## ตรวจสอบผล
 
 Deploy the updated service, then drive the flag from the UI and watch behaviour change with no redeploy.
 
@@ -133,7 +133,7 @@ curl -s https://shop.aws.clouddeploy.example.com/api/products | jq '.recommendat
 # 6
 ```
 
-panel โผล่ขึ้นมาเพราะ SDK ของ pod ที่รันอยู่ได้รับการเปลี่ยนแปลงผ่าน SSE และ `EvalFeature(...).On` พลิกเป็น `true` toggle มันกลับไปปิดใน UI แล้ว count กลับไปเป็น `0` การพลิกแบบ live นั้นโดยที่ container ไม่ถูกแตะ คือผลตอบแทนทั้งหมด
+panel โผล่ขึ้นมาเพราะ SDK ของ pod ที่รันอยู่ได้รับการเปลี่ยนแปลงผ่าน SSE และ `EvalFeature(...).On` พลิกเป็น `true` toggle กลับไปปิดใน UI แล้ว count กลับไปเป็น `0` การพลิกแบบ live นั้นโดยที่ container ไม่ถูกแตะ คือผลตอบแทนทั้งหมด
 
 Confirm the pod picked up the ruleset (not an error) in its logs:
 
@@ -144,12 +144,12 @@ kubectl -n shopmicro logs deploy/shopmicro-products | grep -i growthbook
 
 **ตรวจสอบความเข้าใจ:**
 
-1. ทำไม `flags.New` ถึงเรียก `EnsureLoaded` ตอน startup? request จะเห็นอะไรถ้ามัน evaluate flag ก่อนที่ตัวนั้น return?
+1. ทำไม `flags.New` ถึงเรียก `EnsureLoaded` ตอน startup? request จะเห็นอะไรถ้า evaluate flag ก่อนที่ call นั้น return?
 2. ด้วย SSE data source อะไรเกิดขึ้นจริง ๆ บน pod ที่รันอยู่เมื่อคุณ toggle flag ใน UI — และทำไมถึงไม่ต้อง redeploy?
-3. `Attributes` บน child client มีไว้ทำอะไร ในเมื่อตอนนี้ flag เป็นแค่ on/off ง่าย ๆ? มันเปิดทางให้อะไรได้ในภายหลัง?
+3. `Attributes` บน child client มีไว้ทำอะไร ในเมื่อตอนนี้ flag เป็นแค่ on/off ง่าย ๆ? เปิดทางให้อะไรได้ในภายหลัง?
 4. SDK อ่าน `GROWTHBOOK_API_HOST` เป็น address ของ Service ภายใน cluster แทน public ingress host เหตุผลสองข้อที่นั่นเป็นทางเลือกที่ดีกว่าคืออะไร?
 
-## Recap
+## สรุป
 
 คุณต่อ GrowthBook Go SDK เข้ากับ products service ของ ShopMicro, gate panel recommendations ไว้หลัง flag `shopmicro-recommendations` แล้ว inject internal API host พร้อม SDK key ผ่าน Helm จากนั้นคุณพลิก feature เปิดปิดจาก GrowthBook UI แล้วดู pod ที่ live เปลี่ยน behaviour โดยไม่ต้อง redeploy — การ decouple "เปิดหรือยัง" ออกจาก "deploy หรือยัง" ที่เป็นรูปธรรม
 

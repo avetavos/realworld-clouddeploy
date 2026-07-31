@@ -5,11 +5,11 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-[Datadog agent](/clouddeploy/th/datadog/the-datadog-agent/) กำลัง stream metric, trace และ log ของ ShopMicro จากทั้งสาม cluster เข้า account เดียว ตอนนี้เราตัดสินใจว่าจะ *ดู* อะไรและจะ *alert* อะไร — และทำมันเป็น code ด้วย Terraform **`datadog` provider** `datadog_dashboard` สำหรับ golden signal ของ ShopMicro และชุด resource `datadog_monitor` สำหรับสิ่งที่ควร page คน
+[Datadog agent](/clouddeploy/th/datadog/the-datadog-agent/) กำลัง stream metric, trace และ log ของ ShopMicro จากทั้งสาม cluster เข้า account เดียว ตอนนี้เราตัดสินใจว่าจะ *ดู* อะไรและจะ *alert* อะไร — และทำให้เป็น code ด้วย Terraform **`datadog` provider** `datadog_dashboard` สำหรับ golden signal ของ ShopMicro และชุด resource `datadog_monitor` สำหรับสิ่งที่ควร page คน
 
-มีจุดพลิกเชิงโครงสร้างตรงนี้ที่ทำให้บทนี้ต่างจากส่วนอื่นของ platform dashboard และ monitor ไม่ได้อยู่ *บน* cluster — มันอยู่ใน SaaS ของ Datadog ซึ่งเห็นทุก cloud อยู่แล้ว ดังนั้นจึงมี definition **เดียว** ที่ apply ครั้งเดียว ไม่ใช่หนึ่งตัวต่อ cloud agent รันสามครั้ง แต่ dashboard นิยามครั้งเดียวและ filter ตาม `kube_cluster_name` เพื่อแสดง AWS, GCP และ Azure ด้วยกัน
+มีจุดพลิกเชิงโครงสร้างตรงนี้ที่ทำให้บทนี้ต่างจากส่วนอื่นของ platform dashboard และ monitor ไม่ได้อยู่ *บน* cluster — แต่อยู่ใน SaaS ของ Datadog ที่เห็นทุก cloud อยู่แล้ว ดังนั้นจึงมี definition **เดียว** ที่ apply ครั้งเดียว ไม่ใช่หนึ่งตัวต่อ cloud agent รันสามครั้ง แต่ dashboard นิยามครั้งเดียวและ filter ตาม `kube_cluster_name` เพื่อแสดง AWS, GCP และ Azure ด้วยกัน
 
 ชิ้นส่วนต่าง ๆ:
 
@@ -18,15 +18,15 @@ sidebar:
 - resource `datadog_monitor` หลายตัว — error rate สูง, latency สูง, service ที่ down — query service ของ ShopMicro ข้ามทุก cluster
 - unit `live/datadog/monitors` เดียวที่เป็นเจ้าของทั้งหมด cloud-agnostic ตามการออกแบบ
 
-## Why
+## ทำไม
 
-**ทำไมทำ monitor เป็น code แทนที่จะคลิกประกอบมันใน UI?** เพราะ monitor ที่สร้างใน UI มีอยู่แค่ใน UI — ไม่มีเอกสาร ไม่ถูก review และสร้างซ้ำให้เหมือนเดิมไม่ได้หลังจากมีคนปรับ threshold ตอนตีสอง การนิยามมันใน Terraform ทำให้ทุก threshold เป็น diff ที่ review ได้ version มันร่วมกับ platform ที่เหลือ และหมายความว่า Datadog account ใหม่ถูกทำให้เท่าเทียมได้ด้วย `apply` เดียว การ alert *คือ* infrastructure
+**ทำไมทำ monitor เป็น code แทนที่จะคลิกประกอบใน UI?** เพราะ monitor ที่สร้างใน UI มีอยู่แค่ใน UI — ไม่มีเอกสาร ไม่ถูก review และสร้างซ้ำให้เหมือนเดิมไม่ได้หลังจากมีคนปรับ threshold ตอนตีสอง การนิยามใน Terraform ทำให้ทุก threshold เป็น diff ที่ review ได้ version ไปพร้อมกับ platform ที่เหลือ และทำให้ Datadog account ใหม่ตั้งให้เหมือนเดิมได้ด้วย `apply` เดียว การ alert *คือ* infrastructure
 
-**ทำไม definition เดียวแทนที่จะหนึ่งตัวต่อ cloud?** agent ต้องรันบนแต่ละ cluster เพราะมันเก็บข้อมูล local dashboard และ monitor query backend ของ Datadog ที่รวมเป็นหนึ่งแล้ว ซึ่งเห็นทั้งสาม cluster พร้อมกัน การทำซ้ำมันต่อ cloud จะให้ alert เดียวกันสามชุดที่ fire สามครั้ง — noise ไม่ใช่ coverage monitor เดียวที่ query `service:shopmicro-gateway` (ไม่ scope ตาม cloud หรือ group `by {kube_cluster_name}`) ครอบคลุมทั้ง fleet และบอกคุณว่า cloud *ไหน* พัง
+**ทำไม definition เดียวแทนที่จะหนึ่งตัวต่อ cloud?** agent ต้องรันบนแต่ละ cluster เพราะต้องเก็บข้อมูล local dashboard และ monitor query backend ของ Datadog ที่รวมเป็นหนึ่งแล้ว และเห็นทั้งสาม cluster พร้อมกัน การทำซ้ำต่อ cloud จะให้ alert เดียวกันสามชุดที่ fire สามครั้ง — noise ไม่ใช่ coverage monitor เดียวที่ query `service:shopmicro-gateway` (ไม่ scope ตาม cloud หรือ group `by {kube_cluster_name}`) ครอบคลุมทั้ง fleet และบอกคุณว่า cloud *ไหน* พัง
 
-**ทำไมผูก query เข้ากับชื่อ service ของ ShopMicro?** alert เรื่อง host CPU ทั่วไปไม่ได้บอกคุณว่า shop down การ query APM metric อย่าง `trace.http.request.errors{service:shopmicro-gateway}` ผูก alert เข้ากับพฤติกรรมที่ผู้ใช้เจอ — golden signal (rate, error, duration) สำหรับ service ที่สำคัญ — ซึ่งเป็นสิ่งที่ทำให้ page นั้น actionable
+**ทำไมผูก query เข้ากับชื่อ service ของ ShopMicro?** alert เรื่อง host CPU ทั่วไปไม่ได้บอกคุณว่า shop down การ query APM metric อย่าง `trace.http.request.errors{service:shopmicro-gateway}` ผูก alert เข้ากับพฤติกรรมที่ผู้ใช้เจอ — golden signal (rate, error, duration) สำหรับ service ที่สำคัญ — นั่นคือสิ่งที่ทำให้ page นั้น actionable
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Monitors as Terraform code vs building them in the Datadog UI**
 
@@ -36,13 +36,13 @@ sidebar:
 **One cloud-agnostic definition vs per-cloud dashboards and monitors**
 
 - **Pros:** source of truth เดียว alert เดียวที่ระบุชื่อ cloud ที่พัง ไม่มี noise ซ้ำสามชุด
-- **Cons:** unit อยู่นอก tree `live/<cloud>/` ต่อ cloud ดังนั้นมันไม่เข้ากับจังหวะ `run --all` ต่อ cloud และต้องมี apply ของตัวเอง
+- **Cons:** unit อยู่นอก tree `live/<cloud>/` ต่อ cloud จึงไม่เข้ากับจังหวะ `run --all` ต่อ cloud และต้องมี apply ของตัวเอง
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `modules/datadog-monitoring/` (provider + resources)
 
-เพราะมันเล็งไปที่ API ของ Datadog แทนที่จะเป็น cluster จึงไม่มี provider `helm`/`kubernetes` ตรงนี้ — มีแค่ `datadog` provider ที่ key ด้วย API key และ app key
+เพราะ unit นี้เล็งไปที่ API ของ Datadog แทนที่จะเป็น cluster จึงไม่มี provider `helm`/`kubernetes` ตรงนี้ — มีแค่ `datadog` provider ที่ key ด้วย API key และ app key
 
 ```hcl
 # modules/datadog-monitoring/versions.tf
@@ -175,7 +175,7 @@ resource "datadog_monitor" "gateway_latency" {
 
 ### 4. `live/datadog/monitors/terragrunt.hcl` (one unit, no cluster dependency)
 
-unit นี้ตั้งใจให้อยู่ *นอก* tree `live/{aws,gcp,azure}/` — มันไม่มี cluster ให้ attach มันแค่ต้องการ Datadog key
+unit นี้ตั้งใจให้อยู่ *นอก* tree `live/{aws,gcp,azure}/` — เพราะไม่มี cluster ให้ attach ต้องการแค่ Datadog key
 
 ```hcl
 include "root" { path = find_in_parent_folders("root.hcl") }
@@ -189,11 +189,11 @@ inputs = {
 }
 ```
 
-การเก็บมันไว้ใน tree `live/datadog` ระดับบนของตัวเองเป็นสัญญาณที่ซื่อตรงว่า resource นี้เป็น fleet-wide ไม่ใช่ต่อ cloud — คุณ apply มันครั้งเดียวแล้วมันครอบคลุมทุก cluster ที่ agent รายงานมา
+การเก็บไว้ใน tree `live/datadog` ระดับบนของตัวเองเป็นสัญญาณที่ซื่อตรงว่า resource นี้เป็น fleet-wide ไม่ใช่ต่อ cloud — คุณ apply ครั้งเดียวแล้วครอบคลุมทุก cluster ที่ agent รายงานมา
 
-## Verify
+## ตรวจสอบผล
 
-plan unit มันควร add dashboard และ monitor หนึ่งตัวต่อ service บวก latency monitor:
+plan unit ดู ควร add dashboard และ monitor หนึ่งตัวต่อ service บวก latency monitor:
 
 ```bash
 cd live/datadog/monitors
@@ -246,7 +246,7 @@ curl -sS "https://api.datadoghq.com/api/v1/monitor?monitor_tags=managed-by:terra
 3. ทำไมการ group monitor `by {kube_cluster_name}` ถึงสำคัญสำหรับ multi-cloud fleet?
 4. ทำไม unit `live/datadog/monitors` ถึงอยู่นอก tree `live/{aws,gcp,azure}/`?
 
-## Recap
+## สรุป
 
 ตอนนี้ observability ของ ShopMicro เป็น code เต็มรูปแบบ: Datadog dashboard ของ golden signal และชุด monitor สำหรับ error และ latency นิยามครั้งเดียวด้วย Terraform `datadog` provider และ apply จาก unit เดียวที่ cloud-agnostic เพราะ monitor group ตาม `kube_cluster_name` definition เดียวเฝ้าดูทั้งสาม cluster และระบุชื่อ cloud ที่พัง — ไม่มี alert ซ้ำสามชุด ไม่มี UI drift ทุก threshold เป็น diff ที่ review ได้
 

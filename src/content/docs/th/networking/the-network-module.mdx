@@ -5,11 +5,11 @@ sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
 ทุก cluster ต้องมี network ให้อยู่ข้างใน: private IP space, subnet ที่กระจายข้าม availability zone, และ route ออกสู่ internet บน AWS สิ่งนั้นคือ VPC; บน GCP ก็เป็น VPC เช่นกัน; บน Azure คือ VNet resource สามแบบต่างกัน argument สามชุดต่างกัน — และถ้าคุณปล่อยให้ความต่างนั้นรั่วขึ้นไปข้างบน ทุก layer ที่อยู่เหนือขึ้นไป (cluster, database, CI) ต้องรู้ว่าตัวเองอยู่บน cloud ไหน
 
-เราจึงไม่ปล่อย เรานิยาม **`network` module interface** — input และ output ชุดเดียวกันบนทุก cloud — แล้ววาง resource ที่เฉพาะเจาะจงต่อ cloud ไว้ *ข้างหลัง* มัน บทนี้สร้าง interface นั้นและ implementation แรกของมัน คือ AWS VPC (`modules/aws/network`) แล้วต่อสายมันเป็น Terragrunt unit ที่ `live/aws/network`
+เราจึงไม่ปล่อย เรานิยาม **`network` module interface** — input และ output ชุดเดียวกันบนทุก cloud — แล้ววาง resource ที่เฉพาะเจาะจงต่อ cloud ไว้ *ข้างหลัง* interface นั้น บทนี้สร้าง interface พร้อม implementation แรก คือ AWS VPC (`modules/aws/network`) แล้วต่อสายเป็น Terragrunt unit ที่ `live/aws/network`
 
 interface ตรงตามที่ CloudDeploy ส่วนที่เหลือคาดหวังไว้เป๊ะ:
 
@@ -23,25 +23,25 @@ interface ตรงตามที่ CloudDeploy ส่วนที่เหล
 
 นั่นคือ contract ทั้งหมด บทถัดไป [Three-cloud networks →](/clouddeploy/th/networking/three-cloud-networks/) implement *ห้าชื่อเดียวกันนี้* บน GCP และ Azure — แต่ก่อนอื่นเราต้องมีสักตัวที่ทำงานได้ครบ end to end
 
-## Why
+## ทำไม
 
-เพราะ interface คือสิ่งเดียวที่ layer ข้างบนได้รับอนุญาตให้พึ่งพา Terragrunt `cluster` unit เขียนว่า `subnet_ids = dependency.network.outputs.private_subnet_ids` — และบรรทัดนั้นเหมือนกันแบบ byte-for-byte บน AWS, GCP, และ Azure cluster ไม่เคยรู้เลยว่า AWS เรียกมันว่า `aws_subnet` และ Azure เรียกว่า `azurerm_subnet` เพราะ module คืน list ของ id ธรรมดา ๆ กลับมาไม่ว่าทางไหน
+เพราะ interface คือสิ่งเดียวที่ layer ข้างบนได้รับอนุญาตให้พึ่งพา Terragrunt `cluster` unit เขียนว่า `subnet_ids = dependency.network.outputs.private_subnet_ids` — และบรรทัดนั้นเหมือนกันแบบ byte-for-byte บน AWS, GCP, และ Azure cluster ไม่เคยรู้เลยว่า AWS เรียกว่า `aws_subnet` และ Azure เรียกว่า `azurerm_subnet` เพราะ module คืน list ของ id ธรรมดา ๆ กลับมาไม่ว่าทางไหน
 
-ทำ interface ให้ถูก แล้ว multi-cloud จะยุบจาก "ทุกอย่างสามชุด" เหลือ "wiring diagram หนึ่ง implementation สาม" ทำมันพลาด — ปล่อย `vpc_id` รั่วตรงนี้ `address_space` รั่วตรงนั้น — แล้ว consumer ทุกตัวจะแตกแขนง interface คือการตัดสินใจที่รับน้ำหนัก; VPC resource เป็นแค่วิธีที่เราทำตาม interface นั้นบน cloud เดียว
+ทำ interface ให้ถูก แล้ว multi-cloud จะยุบจาก "ทุกอย่างสามชุด" เหลือ "wiring diagram หนึ่ง implementation สาม" ทำพลาด — ปล่อย `vpc_id` รั่วตรงนี้ `address_space` รั่วตรงนั้น — แล้ว consumer ทุกตัวจะแตกแขนง interface คือการตัดสินใจที่รับน้ำหนัก; VPC resource เป็นแค่วิธีที่เราทำตาม interface นั้นบน cloud เดียว
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Interface แคบ (`name`, `cidr` → id สามตัว) vs. expose VPC ทั้งก้อน**
 
 - **Pros:** consumer ต่อสายเข้ากับห้าชื่อที่เสถียร; กลไกเฉพาะของ AWS (NAT gateway, route table, IGW) ยังซ่อนอยู่และเปลี่ยนได้โดยไม่แตะ `live/` unit สักตัว
-- **Cons:** อะไรก็ตามที่ consumer ต้องใช้จริง ๆ ทีหลัง — security-group id, route table — ต้องถูก *promote* เป็น output ที่ชัดเจนโดยตั้งใจ แรงเสียดทานนั้นตั้งใจให้มี: มันทำให้ interface ซื่อสัตย์แทนที่จะปล่อยให้บวมออก
+- **Cons:** อะไรก็ตามที่ consumer ต้องใช้จริง ๆ ทีหลัง — security-group id, route table — ต้อง *promote* เป็น output ที่ชัดเจนโดยตั้งใจ แรงเสียดทานนั้นตั้งใจให้มี เพราะทำให้ interface ซื่อสัตย์แทนที่จะปล่อยให้บวมออก
 
 **Public + private subnet vs. subnet แบนตัวเดียว**
 
 - **Pros:** load balancer ได้ public subnet ที่มี route ออก internet; node และ database อยู่ใน private subnet ที่ออกได้ผ่าน NAT gateway เท่านั้น — posture มาตรฐานที่ป้องกันได้สำหรับ production cluster
-- **Cons:** NAT gateway มีต้นทุนรายชั่วโมงจริง และเป็นจุด fail ของ AZ เดียวถ้าไม่รันตัวละ zone เรารันตัวเดียวเพื่อให้ capstone ราคาถูก และเรียกชื่อ trade-off นี้ตรง ๆ แทนที่จะซ่อนมัน
+- **Cons:** NAT gateway มีต้นทุนรายชั่วโมงจริง และเป็นจุด fail ของ AZ เดียวถ้าไม่รันตัวละ zone เรารันตัวเดียวเพื่อให้ capstone ราคาถูก และเรียกชื่อ trade-off นี้ตรง ๆ แทนที่จะซ่อนไว้
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `modules/aws/network/variables.tf`
 
@@ -177,7 +177,7 @@ output "public_subnet_ids" {
 
 ### 4. `live/aws/network/terragrunt.hcl`
 
-Terragrunt unit ที่ instantiate module มัน inherit S3 backend และ `aws` provider จาก `root.hcl` (สร้างไว้ตั้งแต่ [Terragrunt & Remote State](/clouddeploy/th/terragrunt/)) ดังนั้นทั้งหมดที่มันจัดหาคือ source และ interface input สองตัว
+Terragrunt unit ที่ instantiate module unit นี้ inherit S3 backend และ `aws` provider จาก `root.hcl` (สร้างไว้ตั้งแต่ [Terragrunt & Remote State](/clouddeploy/th/terragrunt/)) ดังนั้นทั้งหมดที่ต้องจัดหาคือ source และ interface input สองตัว
 
 ```hcl
 include "root" {
@@ -196,9 +196,9 @@ inputs = {
 
 นี่คือหัวใจทั้งหมดของการแยก: module บอกว่า *network คืออะไร* และ unit หกบรรทัดนี้บอกว่า *cloud ไหน ชื่ออะไร address space ไหน* บทถัดไป unit ของ GCP และ Azure หน้าตาเหมือนกันเป๊ะ — เปลี่ยนแค่ path ของ `source` เท่านั้น
 
-## Verify
+## ตรวจสอบผล
 
-Initialize และ plan unit Terragrunt download module source ต่อสาย backend และแสดงสิ่งที่มันจะสร้าง:
+Initialize และ plan unit Terragrunt download module source ต่อสาย backend และแสดงสิ่งที่จะสร้าง:
 
 ```bash
 cd live/aws/network
@@ -206,13 +206,13 @@ terragrunt init
 terragrunt plan
 ```
 
-คาดว่า: plan ที่สร้าง VPC, subnet สี่ตัว (public สอง private สอง), internet gateway, NAT gateway พร้อม EIP ของมัน และ route table — คร่าว ๆ:
+คาดว่า: plan ที่สร้าง VPC, subnet สี่ตัว (public สอง private สอง), internet gateway, NAT gateway พร้อม EIP ของตัวเอง และ route table — คร่าว ๆ:
 
 ```
 Plan: 13 to add, 0 to change, 0 to destroy.
 ```
 
-Apply มัน แล้วยืนยันว่า output ที่ interface สัญญาไว้ถูกเติมค่าจริง:
+Apply แล้วยืนยันว่า output ที่ interface สัญญาไว้ถูกเติมค่าจริง:
 
 ```bash
 terragrunt apply
@@ -231,17 +231,17 @@ public_subnet_ids = [
 ]
 ```
 
-list ที่ไม่ว่างสองตัวและ VPC id หนึ่งตัว — นั่นคือ contract ที่ถูกทำตาม [cluster module](/clouddeploy/th/kubernetes/) จะ consume `network_id` และ `private_subnet_ids` โดยไม่เคยรู้เลยว่ามันมาจาก AWS
+list ที่ไม่ว่างสองตัวและ VPC id หนึ่งตัว — นั่นคือ contract ที่ถูกทำตาม [cluster module](/clouddeploy/th/kubernetes/) จะ consume `network_id` และ `private_subnet_ids` โดยไม่เคยรู้เลยว่ามาจาก AWS
 
 **ตรวจสอบความเข้าใจ:**
 
-1. `live/aws/cluster` unit ต้องวาง node บน network มันอ้างอิง output ตัวไหน และทำไม *ชื่อ* ของ output นั้นถึงเป็นสิ่งที่ทำให้ multi-cloud ทำงานได้?
+1. `live/aws/cluster` unit ต้องวาง node บน network unit นี้อ้างอิง output ตัวไหน และทำไม *ชื่อ* ของ output นั้นถึงเป็นสิ่งที่ทำให้ multi-cloud ทำงานได้?
 2. ทำไม public subnet ถึงมี tag `kubernetes.io/role/elb` ขณะที่ private ตัวมี `kubernetes.io/role/internal-elb` — และใครเป็นคนอ่าน tag พวกนั้น?
 3. คุณอยากให้ cluster module attach security group ที่สร้างตรงนี้ในภายหลัง ต้องเปลี่ยนอะไรใน `outputs.tf` และทำไมแรงเสียดทานนั้นถึงเป็น feature ไม่ใช่ bug?
 4. module รัน NAT gateway ตัวเดียว บอกผลกระทบด้านต้นทุนหนึ่งข้อและด้าน availability หนึ่งข้อ แล้วบอกว่าคุณจะเปลี่ยนอะไรสำหรับ production จริง
 
-## Recap
+## สรุป
 
-เรานิยาม `network` interface — รับ `name`, `cidr` เข้า; คืน `network_id`, `private_subnet_ids`, `public_subnet_ids` ออก — แล้ว back มันด้วย AWS VPC จริง: public และ private subnet ข้ามสอง AZ, internet gateway, NAT gateway, และ tag discovery ของ EKS ทั้งหมดซ่อนอยู่หลังห้าชื่อนั้น `live/aws/network` unit instantiate มันในหกบรรทัดเพราะ `root.hcl` เป็นเจ้าของ backend และ provider อยู่แล้ว
+เรานิยาม `network` interface — รับ `name`, `cidr` เข้า; คืน `network_id`, `private_subnet_ids`, `public_subnet_ids` ออก — แล้ว back ด้วย AWS VPC จริง: public และ private subnet ข้ามสอง AZ, internet gateway, NAT gateway, และ tag discovery ของ EKS ทั้งหมดซ่อนอยู่หลังห้าชื่อนั้น `live/aws/network` unit instantiate module นี้ในหกบรรทัดเพราะ `root.hcl` เป็นเจ้าของ backend และ provider อยู่แล้ว
 
 interface คือผลตอบแทน ไม่มีอะไรเหนือ network อ้างอิง VPC — มีแค่ `network_id` และ subnet list สองตัว ต่อไปเราพิสูจน์คำกล่าวนั้นด้วยการ implement *interface เดียวกันเป๊ะ* บนอีกสอง cloud: [Three-cloud networks →](/clouddeploy/th/networking/three-cloud-networks/)

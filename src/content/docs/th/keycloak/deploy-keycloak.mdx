@@ -5,33 +5,33 @@ sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-[ShopMicro รันอยู่](/clouddeploy/th/deploy-shopmicro/) บนทั้งสาม cluster แล้ว แต่ gateway ของมันเปิดโล่ง — ใครก็ตามที่เข้าถึง ingress ได้ก็เข้าถึง app ได้ ก่อนจะแก้เรื่องนี้ คุณต้องมี identity provider ไว้ใช้ authenticate ก่อน
+[ShopMicro รันอยู่](/clouddeploy/th/deploy-shopmicro/) บนทั้งสาม cluster แล้ว แต่ gateway ยังเปิดโล่ง — ใครก็ตามที่เข้าถึง ingress ได้ก็เข้าถึง app ได้ ก่อนจะแก้เรื่องนี้ คุณต้องมี identity provider ไว้ใช้ authenticate ก่อน
 
-บทนี้ deploy **Keycloak** ลงใน platform layer ที่เป็น cloud-neutral (module `modules/platform/` ตัวเดียวกับที่แบก [Datadog agent](/clouddeploy/th/datadog/) อยู่แล้ว) จากนั้นใช้ **Terraform `keycloak` provider** ประกาศ `shopmicro` realm และ OIDC client สำหรับ gateway เพราะ Keycloak รัน *บน* Kubernetes ผ่าน Helm มันจึงหน้าตาเหมือนกันหมดบน EKS, GKE และ AKS — ต่างกันแค่ ingress hostname ต่อ cloud เท่านั้น
+บทนี้ deploy **Keycloak** ลงใน platform layer ที่เป็น cloud-neutral (module `modules/platform/` ตัวเดียวกับที่แบก [Datadog agent](/clouddeploy/th/datadog/) อยู่แล้ว) จากนั้นใช้ **Terraform `keycloak` provider** ประกาศ `shopmicro` realm และ OIDC client สำหรับ gateway เพราะ Keycloak รัน *บน* Kubernetes ผ่าน Helm จึงหน้าตาเหมือนกันหมดบน EKS, GKE และ AKS — ต่างกันแค่ ingress hostname ต่อ cloud เท่านั้น
 
 client ที่คุณสร้างตรงนี้คือตัวที่ [บทถัดไป](/clouddeploy/th/keycloak/oidc-at-the-gateway/) จะชี้ oauth2-proxy เข้าหา
 
-## Why
+## ทำไม
 
-identity provider คือ concern แบบที่ควรอยู่ใน platform layer พอดี ไม่ใช่ฝังลงในแต่ละ cloud กฎการ authenticate — realm, client, redirect URI, token lifetime — มีรูปทรงแบบ application ไม่ใช่ infrastructure ฉะนั้นการประกาศซ้ำต่อ cloud ก็แค่ทำให้ config ซ้ำสามชุดโดยไม่ได้อะไรกลับมา การรัน Keycloak เป็น Helm release บน cluster เก็บนิยามไว้ชุดเดียวและให้ Terragrunt วางมันลงแต่ละ cloud โดยเปลี่ยนแค่ hostname
+identity provider คือ concern แบบที่ควรอยู่ใน platform layer พอดี ไม่ใช่ฝังลงในแต่ละ cloud กฎการ authenticate — realm, client, redirect URI, token lifetime — มีรูปทรงแบบ application ไม่ใช่ infrastructure ฉะนั้นการประกาศซ้ำต่อ cloud ก็แค่ทำให้ config ซ้ำสามชุดโดยไม่ได้อะไรกลับมา การรัน Keycloak เป็น Helm release บน cluster เก็บนิยามไว้ชุดเดียวและให้ Terragrunt วางลงแต่ละ cloud โดยเปลี่ยนแค่ hostname
 
 การประกาศ realm และ client ใน Terraform (แทนที่จะคลิกผ่าน admin console) เก็บ identity config ไว้ใน loop review-and-apply เดียวกับส่วนอื่นของ platform realm กลายเป็น diff ที่ review ได้ ไม่ใช่ความรู้ที่ฝังอยู่ใน browser session ของใครคนเดียว
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Keycloak Helm release vs. a managed identity service (Cognito / Cloud Identity Platform / Entra External ID)**
 
 - **Pros:** config ชุดเดียวรันเหมือนกันบนทุก cloud; ไม่ต้องเรียนรู้ identity service ต่อ cloud ถึงสามรอบ; ควบคุม realm, flow และ token claim ได้เต็มที่; ไม่มีอะไรออกไปนอก cluster
-- **Cons:** ตอนนี้คุณต้อง operate identity provider เอง — database, การ upgrade และ availability เป็นความรับผิดชอบของคุณ managed service ยกภาระนั้นออกไป แลกกับ cloud-neutrality ที่คอร์สทั้งคอร์สนี้สร้างอยู่บนมัน
+- **Cons:** ตอนนี้คุณต้อง operate identity provider เอง — database, การ upgrade และ availability เป็นความรับผิดชอบของคุณ managed service ยกภาระนั้นออกไป แลกกับ cloud-neutrality ที่คอร์สนี้สร้างอยู่บนฐานนั้น
 
 **Realm as Terraform vs. realm import (`--import-realm` from a JSON file)**
 
 - **Pros (Terraform):** realm และ client เป็น resource แบบ declarative ที่มี plan/apply diff; drift มองเห็นได้; OIDC client secret เป็น Terraform output ที่ต่อตรงเข้า oauth2-proxy ได้เลย
 - **Cons (Terraform):** `keycloak` provider ต้องเข้าถึง admin API ของ Keycloak ได้ตอน apply ซึ่งสร้างเงื่อนไขลำดับขึ้นมา (Keycloak ต้องขึ้นก่อน) การ import realm ผ่านไฟล์ JSON ที่ mount ไว้เลี่ยง network path นั้นได้ แต่เปลี่ยน realm ของคุณให้กลายเป็น blob ทึบที่ chart โหลดตอน boot
 
-## Set it up
+## ติดตั้ง
 
 We add Keycloak to the existing platform module and a small `keycloak` sub-configuration for the realm.
 
@@ -156,7 +156,7 @@ inputs = {
 
 `gcp/` และ `azure/` เป็นไฟล์เดียวกันแต่มี hostname ของตัวเอง — นี่คือทั้งหมดของการมี platform layer ที่ cloud-neutral
 
-## Verify
+## ตรวจสอบผล
 
 Plan the platform unit and confirm Keycloak plus the realm and client show up:
 
@@ -188,11 +188,11 @@ issuer URL ตัวนั้นคือ value เดียวที่ gateway
 **ตรวจสอบความเข้าใจ:**
 
 1. ทำไม Keycloak ถึงอยู่ใน `modules/platform/` แทนที่จะอยู่ใน module `modules/aws|gcp|azure/` ที่แยกต่อ cloud?
-2. อะไรจะพังถ้า `keycloak` provider พยายามสร้าง realm ก่อนที่ Helm release จะพร้อม และ config ป้องกันมันอย่างไร?
+2. อะไรจะพังถ้า `keycloak` provider พยายามสร้าง realm ก่อนที่ Helm release จะพร้อม และ config ป้องกันเรื่องนี้อย่างไร?
 3. ทำไม `access_type` ถึงตั้งเป็น `CONFIDENTIAL` พร้อม `standard_flow_enabled` แทนที่จะเป็น public client?
-4. Keycloak 17+ ตัด path segment หนึ่งที่คู่มือ OIDC เก่ายังแสดงอยู่ออกไป มันคืออะไร และการทิ้งมันไว้จะทำให้ discovery พังตรงไหน?
+4. Keycloak 17+ ตัด path segment หนึ่งที่คู่มือ OIDC เก่ายังแสดงอยู่ออกไป segment นั้นคืออะไร และการทิ้งไว้จะทำให้ discovery พังตรงไหน?
 
-## Recap
+## สรุป
 
 คุณเพิ่ม Keycloak เข้า platform layer ที่ cloud-neutral เป็น Helm release แล้วประกาศ `shopmicro` realm และ confidential OIDC client `shopmicro-gateway` ใน Terraform — พร้อม expose issuer URL และ client secret เป็น output ตอนนี้ identity รันเหมือนกันบนทั้งสาม cloud นิยามเป็น diff ที่ review ได้แทนการคลิกผ่าน console
 

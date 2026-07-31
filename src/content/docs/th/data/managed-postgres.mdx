@@ -5,35 +5,35 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
 [data module](/clouddeploy/th/data/the-data-module/) พิสูจน์ interface บน AWS RDS แล้ว ตอนนี้เรา implement **input และ output ทั้งห้าตัวเดียวกัน** บน GCP Cloud SQL และ Azure Database for PostgreSQL แล้วทำสิ่งที่ทั้งหมดนี้มีไว้เพื่อ: เปลี่ยน `db_host`, `db_port`, `db_name`, `db_user` และ `db_password` ให้เป็น Kubernetes Secret ที่ [ShopMicro](/clouddeploy/th/deploy-shopmicro/) อ่านเป็น `DATABASE_URL`
 
 ผลตอบแทนของ interface ที่สม่ำเสมอเห็นได้ตรงนี้ unit ของ `live/gcp/data/` กับ `live/azure/data/` มีรูปร่างเหมือน AWS แบบ byte-for-byte — `dependency "network"` เดียวกัน input เดียวกัน — เพราะต่างกันแค่ *implementation* เท่านั้น แต่ความต่างนั้นก็เป็นเรื่องจริง: private connectivity คือ VPC security group บน AWS, private service access บน GCP และ delegated subnet บวก private DNS zone บน Azure การตั้งชื่อความต่างเหล่านั้นคือครึ่งหนึ่งของบทเรียน
 
-## Why
+## ทำไม
 
-นี่คือจุดที่ "หนึ่ง interface สาม cloud" พิสูจน์คุณค่าหรือพังทลาย ถ้า managed database แต่ละตัว expose output คนละชุด downstream consumer ทุกตัว — ShopMicro unit, connection secret, CI — จะต้องมี code path สามทาง ด้วยการบังคับให้ Cloud SQL กับ Azure Database emit `db_host`/`db_port`/`db_name`/`db_user`/`db_password` เป๊ะ ตัว *consumer* จึงยัง cloud-agnostic: มันสร้าง `DATABASE_URL` เดียวแบบเดียวกันไม่ว่า database จะรันอยู่ที่ไหนจริง ๆ
+นี่คือจุดที่ "หนึ่ง interface สาม cloud" พิสูจน์คุณค่าหรือพังทลาย ถ้า managed database แต่ละตัว expose output คนละชุด downstream consumer ทุกตัว — ShopMicro unit, connection secret, CI — จะต้องมี code path สามทาง ด้วยการบังคับให้ Cloud SQL กับ Azure Database emit `db_host`/`db_port`/`db_name`/`db_user`/`db_password` เป๊ะ ตัว *consumer* จึงยัง cloud-agnostic: สร้าง `DATABASE_URL` เดียวแบบเดียวกันไม่ว่า database จะรันอยู่ที่ไหนจริง ๆ
 
-managed-DB layer ยังเป็นจุดที่ private-networking model ของแต่ละ cloud ต่างกันมากที่สุด มันจึงเป็นที่ที่ซื่อตรงที่สุดในการแสดงว่า "multi-cloud" ไม่ได้มาฟรี interface ซ่อนความต่างจาก *consumer* แต่มันไม่ซ่อนจาก *คุณ* คนที่เขียน module นั่นคือ trade ที่ถูกต้อง — รับความซับซ้อนไว้ครั้งเดียวใน module เพื่อให้สิบห้าอย่างที่อยู่ downstream ไม่ต้องจ่ายราคานั้นทุกตัว
+managed-DB layer ยังเป็นจุดที่ private-networking model ของแต่ละ cloud ต่างกันมากที่สุด จึงเป็นที่ที่ซื่อตรงที่สุดในการแสดงว่า "multi-cloud" ไม่ได้มาฟรี interface ซ่อนความต่างจาก *consumer* แต่ไม่ซ่อนจาก *คุณ* คนที่เขียน module นั่นคือ trade ที่ถูกต้อง — รับความซับซ้อนไว้ครั้งเดียวใน module เพื่อให้สิบห้าอย่างที่อยู่ downstream ไม่ต้องจ่ายราคานั้นทุกตัว
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **One interface hiding three private-networking models vs cloud-native modules**
 
 - **Pros:** consumer สร้าง connection string แบบเดียวกันทุกที่ การสลับ cloud ไม่แตะ ShopMicro และ diff ระหว่าง `live/gcp/data` กับ `live/azure/data` คือ input ไม่ใช่ logic
-- **Cons:** interface เป็น lowest-common-denominator — มันไม่สามารถ surface Cloud SQL read replica หรือ Azure zone-redundant HA ได้โดยไม่ปล่อย output เฉพาะ cloud ออกมา เมื่อคุณต้องการสิ่งเหล่านั้น คุณขยาย interface อย่างตั้งใจ แทนที่จะ special-case consumer
+- **Cons:** interface เป็น lowest-common-denominator — surface Cloud SQL read replica หรือ Azure zone-redundant HA ไม่ได้โดยไม่ปล่อย output เฉพาะ cloud ออกมา เมื่อคุณต้องการสิ่งเหล่านั้น คุณขยาย interface อย่างตั้งใจ แทนที่จะ special-case consumer
 
 **Building the connection secret in Terraform vs letting the app assemble it**
 
-- **Pros:** Terraform ถือทุกชิ้นส่วนไว้ใน state อยู่แล้ว มันจึงเขียน `Secret` เดียวที่มี `DATABASE_URL` พร้อมใช้ได้ ส่วน app แค่อ่าน env var แล้วไม่ต้องรู้เรื่อง host/port/credential เลย
-- **Cons:** มันผูก data unit เข้ากับ Kubernetes provider และรูปร่าง secret ที่ app คาดหวัง ทางเลือกอีกทาง — ยื่นค่าทั้งห้าให้ app แล้วให้มันประกอบ URL เอง — ช่วย decouple แต่ก็ผลัก URL-encoding กับการจัดการ null เข้าไปในทุก service
+- **Pros:** Terraform ถือทุกชิ้นส่วนไว้ใน state อยู่แล้ว จึงเขียน `Secret` เดียวที่มี `DATABASE_URL` พร้อมใช้ได้ ส่วน app แค่อ่าน env var แล้วไม่ต้องรู้เรื่อง host/port/credential เลย
+- **Cons:** วิธีนี้ผูก data unit เข้ากับ Kubernetes provider และรูปร่าง secret ที่ app คาดหวัง ทางเลือกอีกทาง — ยื่นค่าทั้งห้าให้ app แล้วให้ service ประกอบ URL เอง — ช่วย decouple แต่ก็ผลัก URL-encoding กับการจัดการ null เข้าไปในทุก service
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `modules/gcp/data/main.tf` — Cloud SQL
 
-Cloud SQL เข้าถึง VPC ผ่าน **private service access**: ช่วง IP ที่ reserve ไว้แล้ว peer เข้ากับ network ของคุณ ซึ่ง instance จะ bind เข้ากับมันด้วย `ipv4_enabled = false`
+Cloud SQL เข้าถึง VPC ผ่าน **private service access**: ช่วง IP ที่ reserve ไว้แล้ว peer เข้ากับ network ของคุณ แล้ว instance จะ bind เข้ากับช่วงนั้นด้วย `ipv4_enabled = false`
 
 ```hcl
 variable "name"       { type = string }
@@ -183,7 +183,7 @@ output "db_password" {
 
 ### 3. The connection secret ShopMicro consumes
 
-ตอนนี้ถึงจุดประสงค์ของ output ทั้งห้า: ประกอบมันเป็น `DATABASE_URL` ใน Kubernetes Secret นี่คือชิ้นเล็ก ๆ ของ [ShopMicro unit](/clouddeploy/th/deploy-shopmicro/) ที่แสดงตรงนี้เพราะมันคือสิ่งที่ output ของ `data` ป้อนเข้าไป มัน cloud-agnostic — เหมือนกันบนทุก cloud เพราะ interface เหมือนกัน:
+ตอนนี้ถึงจุดประสงค์ของ output ทั้งห้า: ประกอบทั้งห้าเป็น `DATABASE_URL` ใน Kubernetes Secret นี่คือชิ้นเล็ก ๆ ของ [ShopMicro unit](/clouddeploy/th/deploy-shopmicro/) ที่แสดงตรงนี้เพราะเป็นปลายทางที่ output ของ `data` ป้อนเข้าไป และ cloud-agnostic — เหมือนกันบนทุก cloud เพราะ interface เหมือนกัน:
 
 ```hcl
 dependency "data" { config_path = "../data" }
@@ -207,9 +207,9 @@ resource "kubernetes_secret" "db" {
 }
 ```
 
-เพราะ password เดินทางมาเป็น sensitive output มันจึงไหล dependency → secret โดยไม่เคยพิมพ์ลง log เลย ShopMicro mount `DATABASE_URL` เป็น env var แล้วไม่เคยรู้ว่ามันชี้ไปที่ database ของ cloud ไหน
+เพราะ password เดินทางมาเป็น sensitive output จึงไหล dependency → secret โดยไม่เคยพิมพ์ลง log เลย ShopMicro mount `DATABASE_URL` เป็น env var แล้วไม่เคยรู้ว่าชี้ไปที่ database ของ cloud ไหน
 
-## Verify
+## ตรวจสอบผล
 
 apply data unit ของแต่ละ cloud แล้วยืนยันว่า output มีรูปร่างเดียวกัน จากนั้นยืนยันว่า secret ถูกสร้างขึ้นจริง
 
@@ -242,11 +242,11 @@ kubectl -n shopmicro run pg --rm -it --restart=Never --image=postgres:16 -- \
 
 1. AWS, GCP และ Azure ทำให้ database เป็น private คนละแบบ บอก mechanism ของแต่ละตัว
 2. Cloud SQL ไม่มี attribute ของ port ดังนั้น module จึง return ค่าคงที่ `5432` ทำไมทำแบบนั้นใน module ถึงดีกว่าให้ consumer special-case GCP?
-3. output ชุดเดียวกันเป๊ะให้ประโยชน์อะไรกับ code ของ connection-secret และมันจะพังตรงไหนถ้าคุณต้องการ Cloud SQL read replica?
-4. ไล่ตาม database password ตั้งแต่ตอนสร้างจนถึง env var ของ pod มันมองเห็นเป็น plaintext ที่ step ไหนบ้าง และอะไรทำให้ step เหล่านั้นปลอดภัย?
+3. output ชุดเดียวกันเป๊ะให้ประโยชน์อะไรกับ code ของ connection-secret และจะพังตรงไหนถ้าคุณต้องการ Cloud SQL read replica?
+4. ไล่ตาม database password ตั้งแต่ตอนสร้างจนถึง env var ของ pod password มองเห็นเป็น plaintext ที่ step ไหนบ้าง และอะไรทำให้ step เหล่านั้นปลอดภัย?
 
-## Recap
+## สรุป
 
-เรา implement `data` interface อีกสองครั้ง — GCP Cloud SQL ผ่าน private service access และ Azure Database for PostgreSQL ผ่าน delegated subnet กับ private DNS zone — หลัง output ทั้งห้าตัวเป๊ะ ๆ ที่เวอร์ชัน AWS emit จากนั้นเราเปลี่ยน output เหล่านั้นเป็น `DATABASE_URL` Secret แบบ cloud-agnostic ที่พา password ที่ generate ขึ้นมาจาก state ไปยัง pod โดยไม่เคย log มันเลย private-networking model ต่างกันจริงต่อ cloud interface รับความต่างนั้นไว้เพื่อให้ไม่มีอะไร downstream ต้องแคร์
+เรา implement `data` interface อีกสองครั้ง — GCP Cloud SQL ผ่าน private service access และ Azure Database for PostgreSQL ผ่าน delegated subnet กับ private DNS zone — หลัง output ทั้งห้าตัวเป๊ะ ๆ ที่เวอร์ชัน AWS emit จากนั้นเราเปลี่ยน output เหล่านั้นเป็น `DATABASE_URL` Secret แบบ cloud-agnostic ที่พา password ที่ generate ขึ้นมาจาก state ไปยัง pod โดยไม่เคย log ออกมาเลย private-networking model ต่างกันจริงต่อ cloud interface รับความต่างนั้นไว้เพื่อให้ไม่มีอะไร downstream ต้องแคร์
 
 ตอนนี้ platform มี network, cluster, identity และ data บนทั้งสาม cloud — ทุก dependency ที่ ShopMicro ต้องใช้ ถัดไป [Deploying ShopMicro →](/clouddeploy/th/deploy-shopmicro/) วาง application ลงบนแต่ละ cluster ด้วย `helm_release` โดยต่อ database secret นี้และ keyless identity จาก [IAM module](/clouddeploy/th/iam/workload-identity/) เข้าไป
