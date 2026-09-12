@@ -80,7 +80,7 @@ resource "helm_release" "keycloak" {
 
 ### 2. `modules/platform/keycloak-realm.tf`
 
-The realm and OIDC client, via the `keycloak` provider. Keycloak 17+ (the Quarkus distribution) dropped the old `/auth` path prefix, so issuer URLs are `https://<host>/realms/<realm>` with no `/auth` segment.
+The realm and OIDC client, via the `keycloak` provider. Every current release — 26.x today — ships the Quarkus distribution, which dropped the old `/auth` path prefix back in Keycloak 17, so issuer URLs are `https://<host>/realms/<realm>` with no `/auth` segment.
 
 ```hcl
 provider "keycloak" {
@@ -190,7 +190,7 @@ issuer URL ตัวนั้นคือ value เดียวที่ gateway
 1. ทำไม Keycloak ถึงอยู่ใน `modules/platform/` แทนที่จะอยู่ใน module `modules/aws|gcp|azure/` ที่แยกต่อ cloud?
 2. อะไรจะพังถ้า `keycloak` provider พยายามสร้าง realm ก่อนที่ Helm release จะพร้อม และ config ป้องกันเรื่องนี้อย่างไร?
 3. ทำไม `access_type` ถึงตั้งเป็น `CONFIDENTIAL` พร้อม `standard_flow_enabled` แทนที่จะเป็น public client?
-4. Keycloak 17+ ตัด path segment หนึ่งที่คู่มือ OIDC เก่ายังแสดงอยู่ออกไป segment นั้นคืออะไร และการทิ้งไว้จะทำให้ discovery พังตรงไหน?
+4. Quarkus distribution ที่ Keycloak รุ่นปัจจุบัน (26.x) ใช้ ตัด path segment หนึ่งที่คู่มือ OIDC เก่ายังแสดงอยู่ออกไป segment นั้นคืออะไร และการทิ้งไว้จะทำให้ discovery พังตรงไหน?
 
 ## สรุป
 

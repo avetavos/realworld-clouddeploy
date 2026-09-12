@@ -80,7 +80,7 @@ The exact value keys on the Bitnami chart shift between major versions (the prox
 
 ### 2. `modules/platform/keycloak-realm.tf`
 
-The realm and OIDC client, via the `keycloak` provider. Keycloak 17+ (the Quarkus distribution) dropped the old `/auth` path prefix, so issuer URLs are `https://<host>/realms/<realm>` with no `/auth` segment.
+The realm and OIDC client, via the `keycloak` provider. Every current release — 26.x today — ships the Quarkus distribution, which dropped the old `/auth` path prefix back in Keycloak 17, so issuer URLs are `https://<host>/realms/<realm>` with no `/auth` segment.
 
 ```hcl
 provider "keycloak" {
@@ -190,7 +190,7 @@ That issuer URL is the single value the gateway needs. If discovery returns the 
 1. Why does Keycloak live in `modules/platform/` rather than in the per-cloud `modules/aws|gcp|azure/` modules?
 2. What breaks if the `keycloak` provider tries to create the realm before the Helm release is ready, and how does the config prevent it?
 3. Why is `access_type` set to `CONFIDENTIAL` with `standard_flow_enabled` instead of a public client?
-4. Keycloak 17+ removed a path segment that older OIDC guides still show. What is it, and where would leaving it in break discovery?
+4. The Quarkus distribution that every current Keycloak (26.x) ships removed a path segment that older OIDC guides still show. What is it, and where would leaving it in break discovery?
 
 ## Recap
 
