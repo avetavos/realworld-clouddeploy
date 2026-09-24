@@ -103,8 +103,11 @@ ingress:
 
 ```hcl
 # modules/shopmicro/variables.tf  (additions)
-variable "values_file" { type = string }                 # absolute path to values-<cloud>.yaml
-variable "jwt_secret"  { type = string, sensitive = true }
+variable "values_file" { type = string } # absolute path to values-<cloud>.yaml
+variable "jwt_secret" {
+  type      = string
+  sensitive = true
+}
 ```
 
 ```hcl

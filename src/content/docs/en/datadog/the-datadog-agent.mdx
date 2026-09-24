@@ -15,7 +15,7 @@ The pieces:
 
 - A **Kubernetes secret** holding the Datadog API key, created by Terraform from a sensitive variable — the chart references it by name rather than taking the key inline.
 - A `helm_release` of `datadog/datadog` with a `values.yaml` that enables APM (trace collection), log collection (all containers), and tags every metric with the cluster name and environment.
-- A `live/<cloud>/platform` (or `live/<cloud>/datadog`) unit that generates the `helm`/`kubernetes` providers from the `cluster` outputs — the same pattern you used for [ShopMicro](/clouddeploy/en/deploy-shopmicro/helm-release/).
+- A `live/<cloud>/platform` unit that generates the `helm`/`kubernetes` providers from the `cluster` outputs — the same pattern you used for [ShopMicro](/clouddeploy/en/deploy-shopmicro/helm-release/). Later modules (Keycloak, GrowthBook) add more `.tf` files to this same `modules/platform/` module and more inputs to this same unit — Datadog is the first tenant, not a one-off.
 
 ## Why
 
@@ -68,12 +68,12 @@ clusterAgent:
   enabled: true
 ```
 
-### 2. `modules/datadog-agent/` (secret + release)
+### 2. `modules/platform/` (secret + release)
 
 A thin cloud-neutral module: create the API-key secret, then install the chart against it.
 
 ```hcl
-# modules/datadog-agent/versions.tf
+# modules/platform/versions.tf
 terraform {
   required_providers {
     helm       = { source = "hashicorp/helm", version = "~> 3.0" }
@@ -83,15 +83,21 @@ terraform {
 ```
 
 ```hcl
-# modules/datadog-agent/variables.tf
-variable "values_file"      { type = string }
-variable "chart_version"    { type = string }
-variable "namespace"        { type = string, default = "datadog" }
-variable "datadog_api_key"  { type = string, sensitive = true }
+# modules/platform/variables.tf
+variable "values_file" { type = string }
+variable "chart_version" { type = string }
+variable "namespace" {
+  type    = string
+  default = "datadog"
+}
+variable "datadog_api_key" {
+  type      = string
+  sensitive = true
+}
 ```
 
 ```hcl
-# modules/datadog-agent/main.tf
+# modules/platform/datadog.tf
 resource "kubernetes_namespace" "datadog" {
   metadata { name = var.namespace }
 }
@@ -118,14 +124,14 @@ resource "helm_release" "datadog" {
 }
 ```
 
-### 3. `live/aws/datadog/terragrunt.hcl` (wire it up)
+### 3. `live/aws/platform/terragrunt.hcl` (wire it up)
 
 Same shape as the ShopMicro unit: a `cluster` dependency, a generated provider, and the API key pulled from the environment (fed by CI or a secrets manager, never committed).
 
 ```hcl
 include "root" { path = find_in_parent_folders("root.hcl") }
 
-terraform { source = "../../../modules/datadog-agent" }
+terraform { source = "../../../modules/platform" }
 
 dependency "cluster" {
   config_path = "../cluster"
@@ -159,8 +165,8 @@ EOF
 }
 
 inputs = {
-  values_file    = "${get_repo_root()}/charts/datadog/values.yaml"
-  chart_version  = "3.60.0"
+  values_file     = "${get_repo_root()}/charts/datadog/values.yaml"
+  chart_version   = "3.249.0"
   datadog_api_key = get_env("DD_API_KEY")
 }
 ```
@@ -172,7 +178,7 @@ The `gcp` and `azure` units are identical except for the generated provider's au
 Plan the unit. It should add a namespace, a secret, and the release:
 
 ```bash
-cd live/aws/datadog
+cd live/aws/platform
 terragrunt plan
 ```
 

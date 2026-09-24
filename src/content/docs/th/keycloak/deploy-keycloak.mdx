@@ -61,15 +61,15 @@ resource "helm_release" "keycloak" {
     production   = true
     proxyHeaders = "xforwarded"
     auth = {
-      adminUser      = "admin"
-      existingSecret = kubernetes_secret.keycloak_admin.metadata[0].name
+      adminUser         = "admin"
+      existingSecret    = kubernetes_secret.keycloak_admin.metadata[0].name
       passwordSecretKey = "admin-password"
     }
     ingress = {
-      enabled   = true
+      enabled          = true
       ingressClassName = var.ingress_class
-      hostname  = var.keycloak_hostname   # e.g. "id.aws.clouddeploy.example.com"
-      tls       = true
+      hostname         = var.keycloak_hostname # e.g. "id.aws.clouddeploy.example.com"
+      tls              = true
     }
     postgresql = { enabled = true }
   })]
@@ -80,9 +80,16 @@ resource "helm_release" "keycloak" {
 
 ### 2. `modules/platform/keycloak-realm.tf`
 
-The realm and OIDC client, via the `keycloak` provider. Every current release — 26.x today — ships the Quarkus distribution, which dropped the old `/auth` path prefix back in Keycloak 17, so issuer URLs are `https://<host>/realms/<realm>` with no `/auth` segment.
+realm และ OIDC client ผ่าน `keycloak` provider ทุก release ปัจจุบัน — 26.x ในตอนนี้ — ใช้ Quarkus distribution ซึ่งตัด path prefix `/auth` แบบเก่าออกไปตั้งแต่ Keycloak 17 แล้ว ฉะนั้น issuer URL จึงเป็น `https://<host>/realms/<realm>` ไม่มี `/auth` `keycloak` provider ต้องมี entry ของตัวเองใน `modules/platform/versions.tf` — มันไม่ใช่ provider ตระกูล `hashicorp/*` Terraform จึง resolve มันไม่ได้ถ้าไม่มี `source` ระบุไว้ชัดเจน
 
 ```hcl
+# modules/platform/versions.tf (addition)
+terraform {
+  required_providers {
+    keycloak = { source = "keycloak/keycloak", version = "~> 5.0" }
+  }
+}
+
 provider "keycloak" {
   client_id = "admin-cli"
   username  = "admin"
@@ -146,15 +153,15 @@ dependency "cluster" { config_path = "../cluster" }
 
 inputs = {
   platform_namespace      = "platform"
-  ingress_class           = "nginx"
+  ingress_class           = "alb" # AWS Load Balancer Controller — see the ingress lesson
   keycloak_hostname       = "id.aws.clouddeploy.example.com"
   shopmicro_hostname      = "shop.aws.clouddeploy.example.com"
   keycloak_admin_password = get_env("KEYCLOAK_ADMIN_PASSWORD")
-  keycloak_chart_version  = "24.4.0"
+  keycloak_chart_version  = "25.2.0"
 }
 ```
 
-`gcp/` และ `azure/` เป็นไฟล์เดียวกันแต่มี hostname ของตัวเอง — นี่คือทั้งหมดของการมี platform layer ที่ cloud-neutral
+`gcp/` และ `azure/` เป็นไฟล์เดียวกันแต่มี hostname และ `ingress_class` ของตัวเอง (`gce`, `azure-application-gateway`) — ingress class แบบ native ต่อ cloud เดียวกับที่ [ShopMicro ใช้อยู่แล้ว](/clouddeploy/th/deploy-shopmicro/ingress-and-config/) ไม่ใช่ ingress-nginx
 
 ## ตรวจสอบผล
 

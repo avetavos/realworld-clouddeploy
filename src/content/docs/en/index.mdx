@@ -65,3 +65,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Review what you built, the trade-offs, and where to take CloudDeploy next. [Open →](/clouddeploy/en/wrap-up/)
   </Card>
 </CardGrid>
+
+## Versions verified
+
+Checked against official docs and registries at the time of writing: Terraform 1.16, Terragrunt 1.1 (`run --all`, S3 `use_lockfile`), `hashicorp/aws` ~> 6.0, `hashicorp/google` ~> 8.0, `hashicorp/azurerm` ~> 5.0, EKS/AKS/GKE on Kubernetes 1.36, RDS/Cloud SQL/Azure Database for PostgreSQL 17, `DataDog/datadog` ~> 4.0, Keycloak 26.x (`keycloak/keycloak` ~> 5.0 provider), and current GitHub Actions majors (`actions/checkout@v7`, `hashicorp/setup-terraform@v4`, `aws-actions/configure-aws-credentials@v6`, `google-github-actions/auth@v3`, `azure/login@v3`). Ingress is native per cloud (ALB / GKE ingress / AGIC) throughout — CloudDeploy does not install ingress-nginx, which the Kubernetes project is retiring upstream in March 2026.

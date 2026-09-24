@@ -37,7 +37,7 @@ managed-Kubernetes service ทั้งสามแยกทางกันม�
 
 ### 1. `modules/gcp/cluster/` — GKE
 
-`variables.tf` และ `node_size` map เดียวกัน (map เข้ากับ GCP machine type), VPC-native cluster ที่อ้างอิง secondary range ของ network ด้วยชื่อ (`pods`, `services`), และ node pool ที่จัดการแยก
+`variables.tf` และ `node_size` map เดียวกัน (map เข้ากับ GCP machine type), VPC-native cluster ที่อ้างอิง secondary range ของ network ด้วยชื่อ (`pods`, `services`), และ node pool ที่จัดการแยก พร้อมเปิด `workload_identity_config` ด้วย — [GCP IAM module](/clouddeploy/th/iam/workload-identity/) จะ bind เข้ากับมันในบทถัดไป จึงต้องเปิดไว้ที่ cluster ตั้งแต่ตอนนี้
 
 ```hcl
 locals {
@@ -47,6 +47,8 @@ locals {
     large  = "e2-standard-8"
   }[var.node_size]
 }
+
+data "google_project" "current" {}
 
 resource "google_container_cluster" "this" {
   name       = var.name
@@ -62,6 +64,13 @@ resource "google_container_cluster" "this" {
     cluster_secondary_range_name  = "pods"
     services_secondary_range_name = "services"
   }
+
+  # Required for the GCP IAM module's Workload Identity binding.
+  workload_identity_config {
+    workload_pool = "${data.google_project.current.project_id}.svc.id.goog"
+  }
+
+  deletion_protection = false # teaching platform; unset/true blocks Module 13's teardown
 }
 
 resource "google_container_node_pool" "this" {
@@ -76,7 +85,7 @@ resource "google_container_node_pool" "this" {
 }
 ```
 
-endpoint ของ GKE กลับมาโดยไม่มี scheme และ CA อยู่ใต้ `master_auth` `outputs.tf` normalize ให้เข้า interface:
+GKE ตั้ง `deletion_protection` เป็น true โดย default เมื่อไม่ระบุ ซึ่งจะบล็อก `terragrunt run --all destroy` ของ Module 13 — ตั้งเป็น `false` ไว้ตรง ๆ เหมือนที่ทำไปแล้วกับ instance [managed Postgres](/clouddeploy/th/data/managed-postgres/) endpoint ของ GKE เองก็กลับมาโดยไม่มี scheme และ CA อยู่ใต้ `master_auth` `outputs.tf` normalize ให้เข้า interface:
 
 ```hcl
 output "cluster_name" {
@@ -94,7 +103,7 @@ output "cluster_ca" {
 
 ### 2. `modules/azure/cluster/` — AKS
 
-AKS บังคับให้มี `default_node_pool` แบบ inline และ managed identity cluster ลงจอดใน resource group ที่ derive จาก network `node_size` map เข้ากับ Azure VM size
+AKS บังคับให้มี `default_node_pool` แบบ inline และ managed identity cluster ลงจอดใน resource group ที่ derive จาก network `node_size` map เข้ากับ Azure VM size `oidc_issuer_enabled` กับ `workload_identity_enabled` เปิด OIDC issuer ของ cluster — [Azure IAM module](/clouddeploy/th/iam/workload-identity/) จะ federate managed identity เข้ากับมันในบทถัดไป
 
 ```hcl
 locals {
@@ -121,6 +130,16 @@ resource "azurerm_kubernetes_cluster" "this" {
   identity {
     type = "SystemAssigned"
   }
+
+  # azurerm 5.x requires this block explicitly — "Manual" keeps the classic
+  # inline default_node_pool instead of AKS Node Auto Provisioning (Karpenter).
+  node_provisioning_profile {
+    mode = "Manual"
+  }
+
+  # Required for the Azure IAM module's federated identity credential.
+  oidc_issuer_enabled       = true
+  workload_identity_enabled = true
 }
 ```
 
@@ -178,7 +197,7 @@ inputs = {
 
 ### 4. Building a kubeconfig / the `kubernetes` + `helm` providers
 
-นี่คือสิ่งที่ output สามตัว *มีไว้เพื่อ* platform layer (สร้างใน module ทีหลัง) รัน Helm ผ่าน Terraform `helm` provider ซึ่งต้องการ `kubernetes` provider ที่ config จาก cluster configuration นั้นต่างกันแค่ auth plugin ต่อ cloud — endpoint และ CA เป็น `cluster_endpoint` กับ `base64decode(cluster_ca)` เสมอ
+นี่คือสิ่งที่ output สามตัว *มีไว้เพื่อ* platform layer (สร้างใน module ทีหลัง) รัน Helm ผ่าน Terraform `helm` provider ซึ่งต้องการ `kubernetes` provider ที่ config จาก cluster configuration นั้นต่างกันแค่ auth plugin ต่อ cloud — endpoint และ CA เป็น `cluster_endpoint` กับ `base64decode(cluster_ca)` เสมอ สังเกตว่า block `kubernetes` ของ `helm` provider เองเป็น object attribute เดี่ยว (`kubernetes = { ... }` โดยมี `exec = { ... }` ซ้อนอยู่ข้างใน) ตั้งแต่ provider เขียนใหม่เป็น v3 — ไม่ใช่ nested block แบบเดิมที่ `kubernetes` provider เดี่ยว ๆ ด้านล่างยังใช้อยู่
 
 **AWS** — exec `aws eks get-token`:
 
@@ -194,10 +213,10 @@ provider "kubernetes" {
 }
 
 provider "helm" {
-  kubernetes {
+  kubernetes = {
     host                   = var.cluster_endpoint
     cluster_ca_certificate = base64decode(var.cluster_ca)
-    exec {
+    exec = {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
       args        = ["eks", "get-token", "--cluster-name", var.cluster_name]
@@ -271,8 +290,8 @@ kubectl get nodes
 
 ```
 NAME                                       STATUS   ROLES    AGE   VERSION
-gke-clouddeploy-default-abc1-...           Ready    <none>   2m    v1.33.x
-gke-clouddeploy-default-abc1-...           Ready    <none>   2m    v1.33.x
+gke-clouddeploy-default-abc1-...           Ready    <none>   2m    v1.36.x
+gke-clouddeploy-default-abc1-...           Ready    <none>   2m    v1.36.x
 ```
 
 node `Ready` ที่เข้าถึงผ่าน kubeconfig ที่สร้างจาก `cluster_endpoint` และ `cluster_ca` — output สองตัวเดียวกัน บนคนละ cloud platform layer ตอนนี้ Helm-deploy ลงบน cluster ตัวใดในสามได้เหมือนกัน

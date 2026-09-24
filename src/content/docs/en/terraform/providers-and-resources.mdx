@@ -63,7 +63,7 @@ resource "aws_s3_bucket" "first" {
 ```hcl
 terraform {
   required_providers {
-    google = { source = "hashicorp/google", version = "~> 6.0" }
+    google = { source = "hashicorp/google", version = "~> 8.0" }
     random = { source = "hashicorp/random", version = "~> 3.6" }
   }
 }
@@ -87,12 +87,12 @@ resource "google_storage_bucket" "first" {
 
 ### 3. `scratch/azure/main.tf` — the azurerm provider + a resource group
 
-The azurerm v4 provider requires a `features {}` block and a subscription. The provider reads `ARM_SUBSCRIPTION_ID` from the environment, so you don't hardcode it:
+The azurerm v5 provider requires a `features {}` block and a subscription. The provider reads `ARM_SUBSCRIPTION_ID` from the environment, so you don't hardcode it:
 
 ```hcl
 terraform {
   required_providers {
-    azurerm = { source = "hashicorp/azurerm", version = "~> 4.0" }
+    azurerm = { source = "hashicorp/azurerm", version = "~> 5.0" }
   }
 }
 

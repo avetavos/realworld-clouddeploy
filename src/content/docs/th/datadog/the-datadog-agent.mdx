@@ -15,7 +15,7 @@ agent เป็นชิ้นแรกของ [cloud-neutral platform layer](
 
 - **Kubernetes secret** ที่เก็บ Datadog API key สร้างโดย Terraform จาก sensitive variable — chart อ้างอิงด้วยชื่อแทนที่จะรับ key แบบ inline
 - `helm_release` ของ `datadog/datadog` พร้อม `values.yaml` ที่เปิด APM (trace collection), log collection (ทุก container) และ tag ทุก metric ด้วยชื่อ cluster และ environment
-- unit `live/<cloud>/platform` (หรือ `live/<cloud>/datadog`) ที่ generate provider `helm`/`kubernetes` จาก output ของ `cluster` — pattern เดียวกับที่คุณใช้กับ [ShopMicro](/clouddeploy/th/deploy-shopmicro/helm-release/)
+- unit `live/<cloud>/platform` ที่ generate provider `helm`/`kubernetes` จาก output ของ `cluster` — pattern เดียวกับที่คุณใช้กับ [ShopMicro](/clouddeploy/th/deploy-shopmicro/helm-release/) บทถัดไป (Keycloak, GrowthBook) จะเพิ่มไฟล์ `.tf` อีกลงใน `modules/platform/` module เดียวกันนี้ และเพิ่ม input ให้ unit เดียวกันนี้ — Datadog เป็นผู้เช่ารายแรก ไม่ใช่กรณีพิเศษ
 
 ## ทำไม
 
@@ -68,12 +68,12 @@ clusterAgent:
   enabled: true
 ```
 
-### 2. `modules/datadog-agent/` (secret + release)
+### 2. `modules/platform/` (secret + release)
 
 module ที่บางและ cloud-neutral: สร้าง secret ของ API key จากนั้นติดตั้ง chart โดยชี้มาที่ secret นั้น
 
 ```hcl
-# modules/datadog-agent/versions.tf
+# modules/platform/versions.tf
 terraform {
   required_providers {
     helm       = { source = "hashicorp/helm", version = "~> 3.0" }
@@ -83,15 +83,21 @@ terraform {
 ```
 
 ```hcl
-# modules/datadog-agent/variables.tf
-variable "values_file"      { type = string }
-variable "chart_version"    { type = string }
-variable "namespace"        { type = string, default = "datadog" }
-variable "datadog_api_key"  { type = string, sensitive = true }
+# modules/platform/variables.tf
+variable "values_file" { type = string }
+variable "chart_version" { type = string }
+variable "namespace" {
+  type    = string
+  default = "datadog"
+}
+variable "datadog_api_key" {
+  type      = string
+  sensitive = true
+}
 ```
 
 ```hcl
-# modules/datadog-agent/main.tf
+# modules/platform/datadog.tf
 resource "kubernetes_namespace" "datadog" {
   metadata { name = var.namespace }
 }
@@ -118,14 +124,14 @@ resource "helm_release" "datadog" {
 }
 ```
 
-### 3. `live/aws/datadog/terragrunt.hcl` (wire it up)
+### 3. `live/aws/platform/terragrunt.hcl` (wire it up)
 
 รูปร่างเดียวกับ ShopMicro unit: dependency `cluster`, provider ที่ generate ขึ้น และ API key ที่ดึงจาก environment (ป้อนโดย CI หรือ secrets manager ไม่เคย commit)
 
 ```hcl
 include "root" { path = find_in_parent_folders("root.hcl") }
 
-terraform { source = "../../../modules/datadog-agent" }
+terraform { source = "../../../modules/platform" }
 
 dependency "cluster" {
   config_path = "../cluster"
@@ -159,8 +165,8 @@ EOF
 }
 
 inputs = {
-  values_file    = "${get_repo_root()}/charts/datadog/values.yaml"
-  chart_version  = "3.60.0"
+  values_file     = "${get_repo_root()}/charts/datadog/values.yaml"
+  chart_version   = "3.249.0"
   datadog_api_key = get_env("DD_API_KEY")
 }
 ```
@@ -172,7 +178,7 @@ unit `gcp` และ `azure` เหมือนกันเป๊ะ ยกเ�
 plan unit ดู ควร add namespace, secret และ release:
 
 ```bash
-cd live/aws/datadog
+cd live/aws/platform
 terragrunt plan
 ```
 

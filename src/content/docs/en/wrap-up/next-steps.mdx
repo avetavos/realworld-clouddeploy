@@ -17,7 +17,7 @@ The platform you built is deliberately one honest step short of production — e
 
 **What it teaches:** how to enforce rules on infrastructure *before* it's applied — no public S3 buckets, mandatory tags, approved instance types — instead of catching them in review or in production.
 
-**Where it plugs in:** the CI plan step. Your PR workflow already produces a Terraform plan; feed that plan JSON to [Open Policy Agent](https://www.openpolicyagent.org/) (via `conftest`) or, on Terraform Cloud, to Sentinel, and fail the check when a policy is violated. It's a new gate on the same pipeline, not a new pipeline.
+**Where it plugs in:** the CI plan step. Your PR workflow already produces a Terraform plan; feed that plan JSON to [Open Policy Agent](https://www.openpolicyagent.org/) (via `conftest`) or, on HCP Terraform, to Sentinel, and fail the check when a policy is violated. It's a new gate on the same pipeline, not a new pipeline.
 
 ## Secrets management (Vault / cloud KMS)
 

@@ -48,7 +48,7 @@ remote_state {
     key            = "${path_relative_to_include()}/terraform.tfstate"
     region         = "us-east-1"
     encrypt        = true
-    dynamodb_table = "clouddeploy-locks"   # lock table
+    dynamodb_table = "clouddeploy-locks" # lock table
   }
 }
 ```
@@ -106,7 +106,7 @@ jobs:
       matrix:
         cloud: [aws, gcp, azure]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # ... the same per-cloud OIDC auth + tooling steps as plan.yml,
       #     using the READ-ONLY plan role (drift detection never applies) ...
@@ -116,7 +116,7 @@ jobs:
         run: |
           # -detailed-exitcode: 0 = no changes, 2 = drift, 1 = error
           terragrunt run --all plan \
-            --terragrunt-non-interactive \
+            --non-interactive \
             -- -detailed-exitcode
 ```
 
@@ -136,7 +136,7 @@ Confirm the clean baseline first — an unchanged `main` should plan to nothing:
 
 ```bash
 cd live/aws
-terragrunt run --all plan --terragrunt-non-interactive -- -detailed-exitcode
+terragrunt run --all plan --non-interactive -- -detailed-exitcode
 echo "exit code: $?"
 ```
 

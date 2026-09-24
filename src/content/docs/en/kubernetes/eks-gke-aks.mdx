@@ -37,7 +37,7 @@ But the *inputs* to every one of those auth methods are the same three values: t
 
 ### 1. `modules/gcp/cluster/` — GKE
 
-The same `variables.tf` and `node_size` map (mapped to GCP machine types), a VPC-native cluster referencing the network's secondary ranges by name (`pods`, `services`), and a separately managed node pool.
+The same `variables.tf` and `node_size` map (mapped to GCP machine types), a VPC-native cluster referencing the network's secondary ranges by name (`pods`, `services`), and a separately managed node pool. It also turns on `workload_identity_config` — the [GCP IAM module](/clouddeploy/en/iam/workload-identity/) binds to it in a later module, so it has to be enabled here, on the cluster.
 
 ```hcl
 locals {
@@ -47,6 +47,8 @@ locals {
     large  = "e2-standard-8"
   }[var.node_size]
 }
+
+data "google_project" "current" {}
 
 resource "google_container_cluster" "this" {
   name       = var.name
@@ -62,6 +64,13 @@ resource "google_container_cluster" "this" {
     cluster_secondary_range_name  = "pods"
     services_secondary_range_name = "services"
   }
+
+  # Required for the GCP IAM module's Workload Identity binding.
+  workload_identity_config {
+    workload_pool = "${data.google_project.current.project_id}.svc.id.goog"
+  }
+
+  deletion_protection = false # teaching platform; unset/true blocks Module 13's teardown
 }
 
 resource "google_container_node_pool" "this" {
@@ -76,7 +85,7 @@ resource "google_container_node_pool" "this" {
 }
 ```
 
-GKE's endpoint comes back without a scheme and its CA is under `master_auth`. `outputs.tf` normalizes to the interface:
+GKE defaults `deletion_protection` to true when it's unset, which would block Module 13's `terragrunt run --all destroy` — set it `false` explicitly, the same call already made for the [managed Postgres](/clouddeploy/en/data/managed-postgres/) instance. GKE's endpoint also comes back without a scheme and its CA is under `master_auth`. `outputs.tf` normalizes to the interface:
 
 ```hcl
 output "cluster_name" {
@@ -94,7 +103,7 @@ output "cluster_ca" {
 
 ### 2. `modules/azure/cluster/` — AKS
 
-AKS requires an inline `default_node_pool` and a managed identity. The cluster lands in the resource group derived from the network. `node_size` maps to Azure VM sizes.
+AKS requires an inline `default_node_pool` and a managed identity. The cluster lands in the resource group derived from the network. `node_size` maps to Azure VM sizes. `oidc_issuer_enabled` and `workload_identity_enabled` turn on the cluster's OIDC issuer — the [Azure IAM module](/clouddeploy/en/iam/workload-identity/) federates a managed identity against it in a later module.
 
 ```hcl
 locals {
@@ -121,6 +130,16 @@ resource "azurerm_kubernetes_cluster" "this" {
   identity {
     type = "SystemAssigned"
   }
+
+  # azurerm 5.x requires this block explicitly — "Manual" keeps the classic
+  # inline default_node_pool instead of AKS Node Auto Provisioning (Karpenter).
+  node_provisioning_profile {
+    mode = "Manual"
+  }
+
+  # Required for the Azure IAM module's federated identity credential.
+  oidc_issuer_enabled       = true
+  workload_identity_enabled = true
 }
 ```
 
@@ -178,7 +197,7 @@ That `inputs` block is character-for-character the AWS one from last lesson. The
 
 ### 4. Building a kubeconfig / the `kubernetes` + `helm` providers
 
-This is what the three outputs are *for*. The platform layer (built in later modules) runs Helm through the Terraform `helm` provider, which needs the `kubernetes` provider configured from the cluster. That configuration differs only in the auth plugin per cloud — endpoint and CA are always `cluster_endpoint` and `base64decode(cluster_ca)`.
+This is what the three outputs are *for*. The platform layer (built in later modules) runs Helm through the Terraform `helm` provider, which needs the `kubernetes` provider configured from the cluster. That configuration differs only in the auth plugin per cloud — endpoint and CA are always `cluster_endpoint` and `base64decode(cluster_ca)`. Note the `helm` provider's own `kubernetes` block is a single object attribute (`kubernetes = { ... }`, with `exec = { ... }` nested inside) since the provider's v3 rewrite — not the classic nested block the standalone `kubernetes` provider still uses below.
 
 **AWS** — exec `aws eks get-token`:
 
@@ -194,10 +213,10 @@ provider "kubernetes" {
 }
 
 provider "helm" {
-  kubernetes {
+  kubernetes = {
     host                   = var.cluster_endpoint
     cluster_ca_certificate = base64decode(var.cluster_ca)
-    exec {
+    exec = {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
       args        = ["eks", "get-token", "--cluster-name", var.cluster_name]
@@ -271,8 +290,8 @@ kubectl get nodes
 
 ```
 NAME                                       STATUS   ROLES    AGE   VERSION
-gke-clouddeploy-default-abc1-...           Ready    <none>   2m    v1.33.x
-gke-clouddeploy-default-abc1-...           Ready    <none>   2m    v1.33.x
+gke-clouddeploy-default-abc1-...           Ready    <none>   2m    v1.36.x
+gke-clouddeploy-default-abc1-...           Ready    <none>   2m    v1.36.x
 ```
 
 `Ready` nodes reached through a kubeconfig built from `cluster_endpoint` and `cluster_ca` — the same two outputs, on a different cloud. The platform layer can now Helm-deploy onto any of the three identically.

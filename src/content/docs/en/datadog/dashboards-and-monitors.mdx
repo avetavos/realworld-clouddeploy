@@ -48,16 +48,25 @@ Because this targets Datadog's API rather than a cluster, there's no `helm`/`kub
 # modules/datadog-monitoring/versions.tf
 terraform {
   required_providers {
-    datadog = { source = "DataDog/datadog", version = "~> 3.40" }
+    datadog = { source = "DataDog/datadog", version = "~> 4.0" }
   }
 }
 ```
 
 ```hcl
 # modules/datadog-monitoring/variables.tf
-variable "datadog_api_key" { type = string, sensitive = true }
-variable "datadog_app_key" { type = string, sensitive = true }
-variable "datadog_site"    { type = string, default = "datadoghq.com" }
+variable "datadog_api_key" {
+  type      = string
+  sensitive = true
+}
+variable "datadog_app_key" {
+  type      = string
+  sensitive = true
+}
+variable "datadog_site" {
+  type    = string
+  default = "datadoghq.com"
+}
 variable "services" {
   type    = list(string)
   default = ["shopmicro-gateway", "shopmicro-users", "shopmicro-orders"]
@@ -79,19 +88,19 @@ provider "datadog" {
 
 ### 2. The ShopMicro dashboard
 
-An ordered dashboard with the golden signals for the gateway. A `template_variable` lets you filter the whole board by cluster, so one dashboard shows any cloud or all of them.
+An ordered dashboard with the golden signals for the gateway. A `template_variable` lets you filter the whole board by cluster, so one dashboard shows any cloud or all of them. `defaults` (a list) is the current attribute — the older single-value `default` is deprecated.
 
 ```hcl
 # modules/datadog-monitoring/dashboard.tf
 resource "datadog_dashboard" "shopmicro" {
   title       = "ShopMicro — Service Health"
-  description  = "Golden signals for ShopMicro across all clouds. Managed by Terraform."
+  description = "Golden signals for ShopMicro across all clouds. Managed by Terraform."
   layout_type = "ordered"
 
   template_variable {
-    name    = "cluster"
-    prefix  = "kube_cluster_name"
-    default = "*"
+    name     = "cluster"
+    prefix   = "kube_cluster_name"
+    defaults = ["*"]
   }
 
   widget {

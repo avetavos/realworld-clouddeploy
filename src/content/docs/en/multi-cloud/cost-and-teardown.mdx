@@ -86,7 +86,7 @@ Teardown is apply in reverse. `terragrunt run --all destroy` walks the dependenc
 
 ```bash
 cd live/aws
-terragrunt run --all destroy --terragrunt-non-interactive
+terragrunt run --all destroy --non-interactive
 ```
 
 Do this per cloud (`live/aws`, `live/gcp`, `live/azure`). A few things do **not** vanish with the graph and will keep charging you if you forget them:
@@ -114,7 +114,7 @@ Tear down one cloud and confirm it's genuinely empty. Destroy the AWS tree:
 
 ```bash
 cd live/aws
-terragrunt run --all destroy --terragrunt-non-interactive
+terragrunt run --all destroy --non-interactive
 ```
 
 Expected: Terragrunt destroys in reverse dependency order and finishes clean:
@@ -138,7 +138,7 @@ Destroy complete! Resources: 34 destroyed.
 Then confirm nothing lingers — re-plan should want to *create* everything again (proving state is empty), and the cloud LB should be gone:
 
 ```bash
-terragrunt run --all plan --terragrunt-non-interactive | tail -n 3
+terragrunt run --all plan --non-interactive | tail -n 3
 # => Plan: 34 to add, 0 to change, 0 to destroy.
 
 aws elbv2 describe-load-balancers --region us-east-1 \

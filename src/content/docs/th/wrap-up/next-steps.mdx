@@ -17,7 +17,7 @@ platform ที่คุณสร้างตั้งใจให้ห่า�
 
 **สอนอะไร:** วิธี enforce กฎบน infrastructure *ก่อน* apply — ไม่มี public S3 bucket, tag บังคับ, instance type ที่อนุมัติ — แทนที่จะไปจับใน review หรือใน production
 
-**เสียบเข้าตรงไหน:** CI plan step PR workflow ของคุณ produce Terraform plan อยู่แล้ว; ป้อน plan JSON นั้นให้ [Open Policy Agent](https://www.openpolicyagent.org/) (ผ่าน `conftest`) หรือบน Terraform Cloud ให้ Sentinel แล้ว fail check เมื่อ policy ถูกละเมิด นี่เป็น gate ใหม่บน pipeline เดิม ไม่ใช่ pipeline ใหม่
+**เสียบเข้าตรงไหน:** CI plan step PR workflow ของคุณ produce Terraform plan อยู่แล้ว; ป้อน plan JSON นั้นให้ [Open Policy Agent](https://www.openpolicyagent.org/) (ผ่าน `conftest`) หรือบน HCP Terraform ให้ Sentinel แล้ว fail check เมื่อ policy ถูกละเมิด นี่เป็น gate ใหม่บน pipeline เดิม ไม่ใช่ pipeline ใหม่
 
 ## Secrets management (Vault / cloud KMS)
 

@@ -9,20 +9,20 @@ sidebar:
 
 [บทก่อนหน้า](/clouddeploy/th/keycloak/deploy-keycloak/) ให้ `shopmicro` realm และ OIDC client `shopmicro-gateway` มา แต่ยังไม่มีอะไรบังคับ authentication บทนี้ปิดช่องว่างนั้น
 
-เรา deploy **oauth2-proxy** ลงใน platform layer แล้วต่อสายเข้ากับ Keycloak client จากนั้นเพิ่ม annotation สองบรรทัดลงใน [ShopMicro ingress](/clouddeploy/th/deploy-shopmicro/) เพื่อให้ ingress controller โยนการเช็ค auth ของทุก request ไปให้ oauth2-proxy ผลลัพธ์: request ที่ยังไม่ authenticate ไปยัง gateway ได้ `302` ไปหน้า login ของ Keycloak; request จะถึง ShopMicro ก็ต่อเมื่อ login สำเร็จเท่านั้น
+เรา deploy **oauth2-proxy** ลงใน platform layer ต่อสายเข้ากับ Keycloak client แล้ววาง oauth2-proxy ไว้ตรง ๆ บนเส้นทาง request ของ ShopMicro: ingress ของ oauth2-proxy เองรับหน้าที่แทน ShopMicro บน hostname นั้น แล้ว proxy traffic ที่ authenticate แล้วต่อไปยัง gateway Service ที่อยู่ข้างหลัง ผลลัพธ์: request ที่ยังไม่ authenticate ไปยัง gateway ได้ `302` ไปหน้า login ของ Keycloak; request จะถึง ShopMicro ก็ต่อเมื่อ login สำเร็จเท่านั้น
 
 ## ทำไม
 
 service ของ ShopMicro เองไม่ควรต้อง implement OIDC ซ้ำกันทีละตัว authentication เป็น cross-cutting concern ฉะนั้นเราบังคับครั้งเดียวที่ขอบ ที่หน้า gateway — app ยังไม่รู้เลยว่า login ทำงานอย่างไร แค่รับ request ที่ authenticate มาแล้ว
 
-pattern **external-auth** (ingress annotation ที่โยนไปให้ oauth2-proxy) เหมาะกับตรงนี้เพราะ ShopMicro มี ingress อยู่แล้ว เราไม่ได้ reroute traffic ทั้งหมดผ่าน proxy ตัวที่สอง; แต่ ingress controller ทำ subrequest ไปที่ oauth2-proxy สำหรับแต่ละ request แล้ว forward เฉพาะตัวที่ผ่าน oauth2-proxy พูด OIDC กับ Keycloak, จัดการ session cookie และรับมือกับ redirect dance — ซึ่งไม่มีอันไหนควรอยู่ใน application code เลย
+มีสองวิธีที่จะต่อ oauth2-proxy เข้ากับ ingress: annotation แบบ **external-auth** ที่ให้ ingress controller ทำ subrequest ไปที่ oauth2-proxy สำหรับทุก request แล้ว forward เฉพาะตัวที่ผ่าน หรือวาง oauth2-proxy ไว้**ตรง ๆ บนเส้นทาง request** เป็น backend ของ ingress เอง แล้วให้ oauth2-proxy proxy ต่อไปยัง service จริงเอง external-auth เบากว่า แต่มันเป็น feature เฉพาะของ nginx-ingress-controller (`nginx.ingress.kubernetes.io/auth-url`) ที่ไม่มีบน AWS Load Balancer Controller, GKE ingress หรือ AGIC — สาม controller ที่คอร์สนี้ติดตั้งจริง (ดู [Ingress and per-cloud config](/clouddeploy/th/deploy-shopmicro/ingress-and-config/)) CloudDeploy ไม่เพิ่ม ingress-nginx เป็น controller ตัวที่สี่แค่เพื่อ annotation อันเดียวนั้น: มันกำลังจะ retire ที่ upstream ในเดือนมีนาคม 2026 และการรันมันควบคู่กับ controller แบบ native ของสาม cloud จะทำลายจุดยืนที่ตรงไปตรงมาที่บท ingress เพิ่งวางไว้ ฉะนั้น CloudDeploy วาง oauth2-proxy ไว้บนเส้นทาง request แทน — pattern เดียวที่ทำงานเหมือนกันหลัง ALB, GKE ingress และ AGIC oauth2-proxy พูด OIDC กับ Keycloak, จัดการ session cookie, รับมือกับ redirect dance และ forward ทุกอย่างที่ authenticate แล้วต่อไปยัง ShopMicro gateway โดยตรง — ซึ่งไม่มีอันไหนควรอยู่ใน application code เลย
 
 ## ข้อดีข้อเสีย
 
-**External auth (ingress annotations) vs. oauth2-proxy as a reverse proxy in the request path**
+**oauth2-proxy as a reverse proxy in the request path vs. an ingress controller's external-auth annotation**
 
-- **Pros:** ShopMicro เก็บ ingress และ routing เดิมไว้; oauth2-proxy เห็นแค่ auth subrequest และ traffic ของ callback `/oauth2/*` ไม่ใช่ทุก byte ของ app; auth เป็น annotation สองบรรทัดที่คุณเพิ่มหรือถอดได้ต่อ route
-- **Cons:** ขึ้นอยู่กับว่า ingress controller รองรับ external auth หรือไม่ (nginx รองรับผ่าน `auth-url`); subrequest เพิ่ม hop หนึ่งบน hot path การรัน oauth2-proxy แบบ inline เป็นประตูหน้าของ upstream นั้นเข้าใจง่ายกว่า แต่ก็ต้อนทุก traffic ผ่านตัวเอง
+- **Pros:** ทำงานเหมือนกันหลัง ingress controller ไหนก็ได้ — ALB, GKE ingress, AGIC หรืออื่น ๆ — เพราะ "ingress backend เป็น Service ที่ proxy ต่อไป" ไม่ต้องพึ่ง feature เฉพาะของ controller ตัวไหนเลย pattern เดียว ไม่มีความต่างต่อ cloud และไม่ต้องเพิ่ม ingress controller ตัวที่สี่
+- **Cons:** ทุก request ไม่ใช่แค่ตอนเช็ค auth ต้องผ่าน oauth2-proxy เพิ่มอีกหนึ่ง hop ก่อนถึง gateway annotation แบบ external-auth เบากว่าบน hot path และปล่อยให้ ingress ของ ShopMicro เองคุม routing อยู่ — แต่มันมีเฉพาะบน ingress controller ตระกูล nginx ซึ่งคอร์สนี้ไม่ได้รัน (ดู [บท ingress](/clouddeploy/th/deploy-shopmicro/ingress-and-config/))
 
 **oauth2-proxy at the edge vs. per-service token validation in ShopMicro**
 
@@ -59,20 +59,21 @@ resource "helm_release" "oauth2_proxy" {
   values = [yamlencode({
     config = {
       existingSecret = kubernetes_secret.oauth2_proxy.metadata[0].name
-      configFile = <<-CFG
+      configFile     = <<-CFG
         provider = "keycloak-oidc"
         oidc_issuer_url = "https://${var.keycloak_hostname}/realms/shopmicro"
         redirect_url = "https://${var.shopmicro_hostname}/oauth2/callback"
+        upstreams = ["http://shopmicro-gateway.shopmicro.svc.cluster.local:80"]
         email_domains = ["*"]
         cookie_secure = true
         reverse_proxy = true
       CFG
     }
     ingress = {
-      enabled          = true
-      className        = var.ingress_class
-      path             = "/oauth2"
-      hosts            = [var.shopmicro_hostname]
+      enabled   = true
+      className = var.ingress_class
+      path      = "/"
+      hosts     = [var.shopmicro_hostname]
     }
   })]
 
@@ -80,30 +81,19 @@ resource "helm_release" "oauth2_proxy" {
 }
 ```
 
-`reverse_proxy = true` บอก oauth2-proxy ให้เชื่อ header `X-Forwarded-*` ที่ ingress set มา route `/oauth2/*` (รวมถึง `/oauth2/callback` ที่เราลงทะเบียนเป็น redirect URI ของ client) ถูก expose บน host เดียวกับ ShopMicro ฉะนั้น browser อยู่บน domain เดียวตลอดทั้ง flow
+`upstreams` คือสิ่งที่ทำให้นี่เป็น pattern แบบ request-path: ingress ของ oauth2-proxy ที่ `path = "/"` รับหน้าที่ทั้ง hostname ของ ShopMicro แล้ว oauth2-proxy เองก็ proxy ทุกอย่างที่มี session ที่ valid ต่อไปยัง Service `shopmicro-gateway` โดยตรง — ไม่ใช่แค่ route callback `/oauth2/*` `reverse_proxy = true` บอก oauth2-proxy ให้เชื่อ header `X-Forwarded-*` ที่ ingress set มา
 
-### 2. `modules/platform/shopmicro-auth.tf`
+### 2. ยก hostname ให้ oauth2-proxy
 
-The annotations that turn on enforcement. These attach to the ShopMicro ingress and tell nginx to check every request against oauth2-proxy first.
+เพราะ ingress ของ oauth2-proxy รับหน้าที่ `var.shopmicro_hostname` ที่ `path = "/"` แล้ว [ingress ของ ShopMicro เอง](/clouddeploy/th/deploy-shopmicro/ingress-and-config/) บน host เดียวกันต้องหลีกทาง — หนึ่ง hostname มี ingress ได้หนึ่งตัว ปิดมันในไฟล์ values ต่อ cloud:
 
-```hcl
-resource "kubernetes_annotations" "shopmicro_auth" {
-  api_version = "networking.k8s.io/v1"
-  kind        = "Ingress"
-  metadata {
-    name      = "shopmicro"
-    namespace = var.shopmicro_namespace
-  }
-  annotations = {
-    "nginx.ingress.kubernetes.io/auth-url"    = "https://${var.shopmicro_hostname}/oauth2/auth"
-    "nginx.ingress.kubernetes.io/auth-signin" = "https://${var.shopmicro_hostname}/oauth2/start?rd=$escaped_request_uri"
-  }
-
-  depends_on = [helm_release.oauth2_proxy]
-}
+```yaml
+# charts/shopmicro/values-aws.yaml (amendment)
+ingress:
+  enabled: false # oauth2-proxy's ingress fronts this host instead
 ```
 
-`auth-url` คือ subrequest ที่ nginx ทำต่อ request — `202` แปลว่า "ปล่อยผ่าน" `401` แปลว่า "ยังไม่ authenticate" `auth-signin` คือจุดที่ nginx ส่ง browser ไปตอนได้ `401`: `/oauth2/start` ของ oauth2-proxy ซึ่งจะ redirect ต่อไปที่ Keycloak และพก `rd` ไปด้วย เพื่อให้ user กลับมาลงตรงที่เริ่มต้นหลัง login
+ทำแบบเดียวกันใน `values-gcp.yaml` และ `values-azure.yaml` Service ของ ShopMicro ไม่เปลี่ยนแปลงและยังเข้าถึงได้จากใน cluster เหมือนเดิม — เปลี่ยนแค่ ingress สาธารณะของ hostname นั้นไปอยู่ที่ oauth2-proxy
 
 ### 3. `live/aws/platform/terragrunt.hcl`
 
@@ -112,9 +102,8 @@ Add the new inputs alongside the Keycloak ones from the last lesson:
 ```hcl
 inputs = {
   # ...existing keycloak inputs...
-  shopmicro_namespace        = "shopmicro"
   oauth2_proxy_cookie_secret = get_env("OAUTH2_PROXY_COOKIE_SECRET")
-  oauth2_proxy_chart_version = "7.12.0"
+  oauth2_proxy_chart_version = "10.7.0"
 }
 ```
 
@@ -151,13 +140,13 @@ curl -sI "https://shop.aws.clouddeploy.example.com/oauth2/start?rd=%2F"
 
 **ตรวจสอบความเข้าใจ:**
 
-1. ใน pattern external-auth nginx ส่งอะไรไปให้ oauth2-proxy จริง ๆ ในแต่ละ request และ response `202` กับ `401` หมายความว่าอะไร?
-2. ทำไม route `/oauth2/*` ของ oauth2-proxy ถึงต้อง serve บน hostname *เดียวกัน* กับ ShopMicro?
+1. ทำไมการวาง oauth2-proxy ไว้ตรง ๆ บนเส้นทาง request ถึงทำงานเหมือนกันหลัง ALB, GKE ingress และ AGIC ในขณะที่ pattern แบบ external-auth annotation ทำไม่ได้?
+2. ทำไม ingress ของ oauth2-proxy กับ ingress ของ ShopMicro เองถึงรับหน้าที่ `var.shopmicro_hostname` พร้อมกันไม่ได้ และการเปลี่ยนบรรทัดเดียวอะไรที่ยก hostname ให้ oauth2-proxy?
 3. edge auth พิสูจน์ว่า user login แล้ว แต่จงใจ *ไม่* ทำอะไร และความรับผิดชอบนั้นตกไปอยู่ที่ไหน?
-4. query parameter `rd` ใน `auth-signin` มีไว้ทำอะไร และถ้าไม่มี user จะเจอประสบการณ์แบบไหน?
+4. `upstreams` ชี้ oauth2-proxy ไปที่ `shopmicro-gateway.shopmicro.svc.cluster.local` ซึ่งเป็น in-cluster Service address ไม่ใช่ public ingress hostname ทำไมถึงเป็นตัวเลือกที่ถูกต้อง?
 
 ## สรุป
 
-คุณ deploy oauth2-proxy ลงใน platform layer, ต่อสายเข้ากับ Keycloak OIDC client แล้วเปิด enforcement ด้วย ingress annotation สองบรรทัด — จากนั้น verify ว่า request ที่ยังไม่ authenticate ตอนนี้ได้ `302` ไปหน้า login ของ Keycloak ShopMicro ถูก authenticate ที่ขอบ เหมือนกันบนทุก cloud โดยตัว app เองไม่เปลี่ยนเลย
+คุณ deploy oauth2-proxy ลงใน platform layer, ต่อสายเข้ากับ Keycloak OIDC client แล้ววางมันไว้ตรง ๆ บนเส้นทาง request ของ ShopMicro — ingress ของมันรับหน้าที่ hostname แล้ว proxy traffic ที่ authenticate แล้วต่อไปยัง gateway Service โดยตรง — จากนั้น verify ว่า request ที่ยังไม่ authenticate ได้ `302` ไปหน้า login ของ Keycloak ShopMicro ถูก authenticate ที่ขอบ เหมือนกันหลัง ALB, GKE ingress และ AGIC โดยตัว app เองไม่เปลี่ยนเลย
 
 เท่านี้ก็จบเรื่อง identity ต่อไปคืออีกครึ่งของการควบคุม runtime — การตัดสินใจว่า *อะไร* ที่ app ทำโดยไม่ต้อง redeploy: [Feature Flags (GrowthBook) →](/clouddeploy/th/growthbook/)

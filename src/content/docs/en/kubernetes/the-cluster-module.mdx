@@ -121,7 +121,7 @@ resource "aws_iam_role_policy_attachment" "node" {
 resource "aws_eks_cluster" "this" {
   name     = var.name
   role_arn = aws_iam_role.cluster.arn
-  version  = "1.33"
+  version  = "1.36"
 
   access_config {
     authentication_mode = "API"
@@ -245,8 +245,8 @@ kubectl get nodes
 
 ```
 NAME                          STATUS   ROLES    AGE   VERSION
-ip-10-0-32-11.ec2.internal    Ready    <none>   3m    v1.33.x
-ip-10-0-48-24.ec2.internal    Ready    <none>   3m    v1.33.x
+ip-10-0-32-11.ec2.internal    Ready    <none>   3m    v1.36.x
+ip-10-0-48-24.ec2.internal    Ready    <none>   3m    v1.36.x
 ```
 
 Two `Ready` nodes on the network's private subnets — the cluster interface, satisfied and reachable.

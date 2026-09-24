@@ -80,44 +80,44 @@ jobs:
       TF_VAR_datadog_api_key:        ${{ secrets.DATADOG_API_KEY }}
       TF_VAR_keycloak_admin_password: ${{ secrets.KEYCLOAK_ADMIN_PASSWORD }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Auth to AWS
         if: matrix.cloud == 'aws'
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}   # read-write role
           aws-region: us-east-1
 
       - name: Auth to GCP
         if: matrix.cloud == 'gcp'
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_APPLY_SA }}
 
       - name: Auth to Azure
         if: matrix.cloud == 'azure'
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_wrapper: false
 
       - name: Install Terragrunt
         run: |
           curl -sSL -o /usr/local/bin/terragrunt \
-            https://github.com/gruntwork-io/terragrunt/releases/download/v0.67.4/terragrunt_linux_amd64
+            https://github.com/gruntwork-io/terragrunt/releases/download/v1.1.0/terragrunt_linux_amd64
           chmod +x /usr/local/bin/terragrunt
 
       # Provisions infra AND rolls out the Helm releases, in dependency order.
       - name: terragrunt run --all apply
         working-directory: live/${{ matrix.cloud }}
-        run: terragrunt run --all apply --terragrunt-non-interactive
+        run: terragrunt run --all apply --non-interactive
 ```
 
 The apply reads real dependency outputs (not the mock outputs from the plan lesson): `terragrunt run --all apply` waits for `network` before `cluster`, for `cluster` + `data` before `platform` and `shopmicro`, and wires `data`'s sensitive `db_password` output straight into ShopMicro's chart values without it ever appearing in a log.

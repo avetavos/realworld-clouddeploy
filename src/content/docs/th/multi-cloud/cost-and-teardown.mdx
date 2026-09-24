@@ -86,7 +86,7 @@ teardown คือ apply ย้อนกลับ `terragrunt run --all destroy`
 
 ```bash
 cd live/aws
-terragrunt run --all destroy --terragrunt-non-interactive
+terragrunt run --all destroy --non-interactive
 ```
 
 ทำแบบนี้ต่อ cloud (`live/aws`, `live/gcp`, `live/azure`) บางสิ่ง **ไม่** หายไปกับ graph และจะยัง charge คุณต่อถ้าลืม:
@@ -114,7 +114,7 @@ Tear down หนึ่ง cloud แล้วยืนยันว่าว่า
 
 ```bash
 cd live/aws
-terragrunt run --all destroy --terragrunt-non-interactive
+terragrunt run --all destroy --non-interactive
 ```
 
 คาดหวัง: Terragrunt destroy ในลำดับ dependency ย้อนกลับและจบอย่างสะอาด:
@@ -138,7 +138,7 @@ Destroy complete! Resources: 34 destroyed.
 จากนั้นยืนยันว่าไม่มีอะไรค้าง — re-plan ควรอยาก *สร้าง* ทุกอย่างใหม่อีกครั้ง (พิสูจน์ว่า state ว่างเปล่า) และ cloud LB ควรหายไป:
 
 ```bash
-terragrunt run --all plan --terragrunt-non-interactive | tail -n 3
+terragrunt run --all plan --non-interactive | tail -n 3
 # => Plan: 34 to add, 0 to change, 0 to destroy.
 
 aws elbv2 describe-load-balancers --region us-east-1 \

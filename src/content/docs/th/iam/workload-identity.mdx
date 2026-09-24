@@ -45,8 +45,8 @@ static cloud key ใน cluster คือ breach คลาสสิก: `AWS_SEC
 Look up OIDC issuer ของ cluster ด้วยชื่อ, register เป็น IAM OIDC provider, และเขียน assume-role policy ที่ condition `sub` ปักหมุด service account เดียวเป๊ะ
 
 ```hcl
-variable "cluster_name"    { type = string }
-variable "namespace"       { type = string }
+variable "cluster_name" { type = string }
+variable "namespace" { type = string }
 variable "service_account" { type = string }
 
 data "aws_eks_cluster" "this" {
@@ -111,8 +111,8 @@ service account ของ pod จากนั้นพก annotation `eks.amazon
 สร้าง Google service account, ให้สิทธิ์ Kubernetes service account impersonate ผ่าน binding `roles/iam.workloadIdentityUser`, และ attach custom role
 
 ```hcl
-variable "cluster_name"    { type = string }
-variable "namespace"       { type = string }
+variable "cluster_name" { type = string }
+variable "namespace" { type = string }
 variable "service_account" { type = string }
 
 data "google_project" "current" {}
@@ -126,7 +126,7 @@ resource "google_service_account" "this" {
 resource "google_service_account_iam_member" "wi_user" {
   service_account_id = google_service_account.this.name
   role               = "roles/iam.workloadIdentityUser"
-  member = "serviceAccount:${data.google_project.current.project_id}.svc.id.goog[${var.namespace}/${var.service_account}]"
+  member             = "serviceAccount:${data.google_project.current.project_id}.svc.id.goog[${var.namespace}/${var.service_account}]"
 }
 
 # attach the custom role from the least-privilege lesson
@@ -146,11 +146,11 @@ string `member` คือ workload-identity pool binding — `PROJECT.svc.id.goo
 
 ### 3. `modules/azure/iam/main.tf` — Managed Identity
 
-สร้าง user-assigned identity, federate เข้ากับ OIDC issuer ของ cluster สำหรับ service account เดียว, และ assign custom role เหนือ resource group เดียว
+สร้าง user-assigned identity, federate เข้ากับ OIDC issuer ของ cluster สำหรับ service account เดียว, และ assign custom role เหนือ resource group เดียว `azurerm_federated_identity_credential` รับ identity ผ่าน `user_assigned_identity_id` — resource id เต็ม — แทนที่จะเป็น `resource_group_name` บวก `parent_id` แยกกันแบบเดิม ใน azurerm เวอร์ชันปัจจุบัน
 
 ```hcl
-variable "cluster_name"    { type = string }
-variable "namespace"       { type = string }
+variable "cluster_name" { type = string }
+variable "namespace" { type = string }
 variable "service_account" { type = string }
 
 # the AKS cluster lives in the platform resource group (named after the platform)
@@ -176,8 +176,7 @@ resource "azurerm_user_assigned_identity" "this" {
 
 resource "azurerm_federated_identity_credential" "this" {
   name                      = "${var.namespace}-${var.service_account}"
-  resource_group_name       = var.resource_group_name
-  parent_id                 = azurerm_user_assigned_identity.this.id
+  user_assigned_identity_id = azurerm_user_assigned_identity.this.id
   audience                  = ["api://AzureADTokenExchange"]
   issuer                    = data.azurerm_kubernetes_cluster.this.oidc_issuer_url
   subject                   = "system:serviceaccount:${var.namespace}:${var.service_account}"

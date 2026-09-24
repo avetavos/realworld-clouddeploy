@@ -69,11 +69,20 @@ terraform {
 
 ```hcl
 # modules/shopmicro/variables.tf
-variable "chart_path"    { type = string }                 # absolute path to charts/shopmicro
-variable "chart_version" { type = string }                 # the vendored chart's version
-variable "namespace"     { type = string, default = "shopmicro" }
-variable "image_tag"     { type = string, default = "latest" }
-variable "db_url"        { type = string, sensitive = true } # postgres:// ... built from data outputs
+variable "chart_path" { type = string }    # absolute path to charts/shopmicro
+variable "chart_version" { type = string } # the vendored chart's version
+variable "namespace" {
+  type    = string
+  default = "shopmicro"
+}
+variable "image_tag" {
+  type    = string
+  default = "latest"
+}
+variable "db_url" {
+  type      = string
+  sensitive = true # postgres:// ... built from data outputs
+}
 ```
 
 ```hcl

@@ -61,15 +61,15 @@ resource "helm_release" "keycloak" {
     production   = true
     proxyHeaders = "xforwarded"
     auth = {
-      adminUser      = "admin"
-      existingSecret = kubernetes_secret.keycloak_admin.metadata[0].name
+      adminUser         = "admin"
+      existingSecret    = kubernetes_secret.keycloak_admin.metadata[0].name
       passwordSecretKey = "admin-password"
     }
     ingress = {
-      enabled   = true
+      enabled          = true
       ingressClassName = var.ingress_class
-      hostname  = var.keycloak_hostname   # e.g. "id.aws.clouddeploy.example.com"
-      tls       = true
+      hostname         = var.keycloak_hostname # e.g. "id.aws.clouddeploy.example.com"
+      tls              = true
     }
     postgresql = { enabled = true }
   })]
@@ -80,9 +80,16 @@ The exact value keys on the Bitnami chart shift between major versions (the prox
 
 ### 2. `modules/platform/keycloak-realm.tf`
 
-The realm and OIDC client, via the `keycloak` provider. Every current release — 26.x today — ships the Quarkus distribution, which dropped the old `/auth` path prefix back in Keycloak 17, so issuer URLs are `https://<host>/realms/<realm>` with no `/auth` segment.
+The realm and OIDC client, via the `keycloak` provider. Every current release — 26.x today — ships the Quarkus distribution, which dropped the old `/auth` path prefix back in Keycloak 17, so issuer URLs are `https://<host>/realms/<realm>` with no `/auth` segment. The `keycloak` provider needs its own entry in `modules/platform/versions.tf` — it isn't a `hashicorp/*` provider, so Terraform can't resolve it without an explicit `source`.
 
 ```hcl
+# modules/platform/versions.tf (addition)
+terraform {
+  required_providers {
+    keycloak = { source = "keycloak/keycloak", version = "~> 5.0" }
+  }
+}
+
 provider "keycloak" {
   client_id = "admin-cli"
   username  = "admin"
@@ -146,15 +153,15 @@ dependency "cluster" { config_path = "../cluster" }
 
 inputs = {
   platform_namespace      = "platform"
-  ingress_class           = "nginx"
+  ingress_class           = "alb" # AWS Load Balancer Controller — see the ingress lesson
   keycloak_hostname       = "id.aws.clouddeploy.example.com"
   shopmicro_hostname      = "shop.aws.clouddeploy.example.com"
   keycloak_admin_password = get_env("KEYCLOAK_ADMIN_PASSWORD")
-  keycloak_chart_version  = "24.4.0"
+  keycloak_chart_version  = "25.2.0"
 }
 ```
 
-`gcp/` and `azure/` are the same file with their own hostnames — the whole point of a cloud-neutral platform layer.
+`gcp/` and `azure/` are the same file with their own hostnames and `ingress_class` (`gce`, `azure-application-gateway`) — the same native-per-cloud ingress classes [ShopMicro already uses](/clouddeploy/en/deploy-shopmicro/ingress-and-config/), not ingress-nginx.
 
 ## Verify
 

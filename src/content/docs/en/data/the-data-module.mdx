@@ -43,7 +43,7 @@ The AWS implementation is a subnet group over the private subnets, a security gr
 ### 1. `modules/aws/data/variables.tf`
 
 ```hcl
-variable "name"       { type = string }
+variable "name" { type = string }
 variable "network_id" { type = string } # the VPC id
 variable "subnet_ids" { type = list(string) }
 
@@ -86,11 +86,11 @@ resource "random_password" "db" {
 resource "aws_db_instance" "this" {
   identifier     = var.name
   engine         = "postgres"
-  engine_version = "16"          # prefix; RDS resolves the latest 16.x
+  engine_version = "17" # prefix; RDS resolves the latest 17.x
   instance_class = "db.t4g.micro"
 
   allocated_storage     = 20
-  max_allocated_storage = 100    # storage autoscaling ceiling
+  max_allocated_storage = 100 # storage autoscaling ceiling
 
   db_name  = var.db_name
   username = "shopmicro"
@@ -101,11 +101,11 @@ resource "aws_db_instance" "this" {
   publicly_accessible    = false
 
   storage_encrypted   = true
-  skip_final_snapshot = true     # a teaching platform, not prod data
+  skip_final_snapshot = true # a teaching platform, not prod data
 }
 ```
 
-`publicly_accessible = false` plus a security group scoped to the VPC CIDR is the private-only boundary. `engine_version = "16"` is a prefix — RDS picks the latest available `16.x`, which is fine when `auto_minor_version_upgrade` stays on.
+`publicly_accessible = false` plus a security group scoped to the VPC CIDR is the private-only boundary. `engine_version = "17"` is a prefix — RDS picks the latest available `17.x`, which is fine when `auto_minor_version_upgrade` stays on.
 
 ### 3. `modules/aws/data/outputs.tf`
 
@@ -180,7 +180,7 @@ psql "postgres://shopmicro@$(terragrunt output -raw db_host):5432/shopmicro" -c 
 # => timeout — there is no public route, by design
 
 # from a pod inside the cluster: reachable
-kubectl run pg --rm -it --restart=Never --image=postgres:16 -- \
+kubectl run pg --rm -it --restart=Never --image=postgres:17 -- \
   psql "postgres://shopmicro:$(terragrunt output -raw db_password)@$(terragrunt output -raw db_host):5432/shopmicro" -c '\conninfo'
 # => You are connected to database "shopmicro" ...
 ```

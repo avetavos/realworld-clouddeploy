@@ -65,3 +65,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     ทบทวนสิ่งที่คุณสร้าง, trade-off, และจะพา CloudDeploy ไปต่อทางไหน [Open →](/clouddeploy/th/wrap-up/)
   </Card>
 </CardGrid>
+
+## เวอร์ชันที่ตรวจสอบแล้ว
+
+ตรวจกับเอกสารทางการและ registry ณ เวลาที่เขียน: Terraform 1.16, Terragrunt 1.1 (`run --all`, S3 `use_lockfile`), `hashicorp/aws` ~> 6.0, `hashicorp/google` ~> 8.0, `hashicorp/azurerm` ~> 5.0, EKS/AKS/GKE บน Kubernetes 1.36, RDS/Cloud SQL/Azure Database for PostgreSQL 17, `DataDog/datadog` ~> 4.0, Keycloak 26.x (provider `keycloak/keycloak` ~> 5.0), และ GitHub Actions major เวอร์ชันปัจจุบัน (`actions/checkout@v7`, `hashicorp/setup-terraform@v4`, `aws-actions/configure-aws-credentials@v6`, `google-github-actions/auth@v3`, `azure/login@v3`) Ingress เป็นแบบ native ต่อ cloud ตลอดทั้งคอร์ส (ALB / GKE ingress / AGIC) — CloudDeploy ไม่ติดตั้ง ingress-nginx ซึ่งโปรเจกต์ Kubernetes กำลัง retire ที่ upstream ในเดือนมีนาคม 2026

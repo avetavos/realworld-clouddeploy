@@ -36,7 +36,7 @@ managed-DB layer ยังเป็นจุดที่ private-networking mode
 Cloud SQL เข้าถึง VPC ผ่าน **private service access**: ช่วง IP ที่ reserve ไว้แล้ว peer เข้ากับ network ของคุณ แล้ว instance จะ bind เข้ากับช่วงนั้นด้วย `ipv4_enabled = false`
 
 ```hcl
-variable "name"       { type = string }
+variable "name" { type = string }
 variable "network_id" { type = string } # the VPC self_link / id
 variable "subnet_ids" { type = list(string) }
 variable "db_name" {
@@ -66,7 +66,7 @@ resource "random_password" "db" {
 
 resource "google_sql_database_instance" "this" {
   name             = var.name
-  database_version = "POSTGRES_16"
+  database_version = "POSTGRES_17"
   region           = "us-central1"
   depends_on       = [google_service_networking_connection.psa]
 
@@ -108,11 +108,11 @@ output "db_password" {
 
 ### 2. `modules/azure/data/main.tf` — Azure Database for PostgreSQL
 
-Flexible Server ของ Azure ไปแบบ private ผ่าน **delegated subnet** บวก **private DNS zone** ที่ link เข้ากับ VNet
+Flexible Server ของ Azure ไปแบบ private ผ่าน **delegated subnet** บวก **private DNS zone** ที่ link เข้ากับ VNet resource สำหรับ link นี้รับ zone ผ่าน `private_dns_zone_id` ไม่ใช่ชื่อบวก resource group แบบเดิม — เป็นการเปลี่ยน schema ใน azurerm เวอร์ชันปัจจุบัน
 
 ```hcl
-variable "name"       { type = string }
-variable "network_id" { type = string } # the VNet id
+variable "name" { type = string }
+variable "network_id" { type = string }       # the VNet id
 variable "subnet_ids" { type = list(string) } # first is the delegated DB subnet
 variable "db_name" {
   type    = string
@@ -133,10 +133,9 @@ resource "azurerm_private_dns_zone" "pg" {
 }
 
 resource "azurerm_private_dns_zone_virtual_network_link" "pg" {
-  name                  = "${var.name}-link"
-  private_dns_zone_name = azurerm_private_dns_zone.pg.name
-  resource_group_name   = data.azurerm_resource_group.this.name
-  virtual_network_id    = var.network_id
+  name                = "${var.name}-link"
+  private_dns_zone_id = azurerm_private_dns_zone.pg.id
+  virtual_network_id  = var.network_id
 }
 
 resource "random_password" "db" {
@@ -148,7 +147,7 @@ resource "azurerm_postgresql_flexible_server" "this" {
   name                          = var.name
   resource_group_name           = data.azurerm_resource_group.this.name
   location                      = data.azurerm_resource_group.this.location
-  version                       = "16"
+  version                       = "17"
   delegated_subnet_id           = var.subnet_ids[0]
   private_dns_zone_id           = azurerm_private_dns_zone.pg.id
   public_network_access_enabled = false
@@ -231,7 +230,7 @@ terragrunt output db_password  # => <sensitive>
 kubectl -n shopmicro get secret shopmicro-db -o jsonpath='{.data.DATABASE_URL}' | base64 -d
 # => postgres://shopmicro:...@10.42.0.3:5432/shopmicro   (host varies by cloud)
 
-kubectl -n shopmicro run pg --rm -it --restart=Never --image=postgres:16 -- \
+kubectl -n shopmicro run pg --rm -it --restart=Never --image=postgres:17 -- \
   psql "$(kubectl -n shopmicro get secret shopmicro-db -o jsonpath='{.data.DATABASE_URL}' | base64 -d)" -c '\conninfo'
 # => You are connected to database "shopmicro" ...
 ```

@@ -48,16 +48,25 @@ sidebar:
 # modules/datadog-monitoring/versions.tf
 terraform {
   required_providers {
-    datadog = { source = "DataDog/datadog", version = "~> 3.40" }
+    datadog = { source = "DataDog/datadog", version = "~> 4.0" }
   }
 }
 ```
 
 ```hcl
 # modules/datadog-monitoring/variables.tf
-variable "datadog_api_key" { type = string, sensitive = true }
-variable "datadog_app_key" { type = string, sensitive = true }
-variable "datadog_site"    { type = string, default = "datadoghq.com" }
+variable "datadog_api_key" {
+  type      = string
+  sensitive = true
+}
+variable "datadog_app_key" {
+  type      = string
+  sensitive = true
+}
+variable "datadog_site" {
+  type    = string
+  default = "datadoghq.com"
+}
 variable "services" {
   type    = list(string)
   default = ["shopmicro-gateway", "shopmicro-users", "shopmicro-orders"]
@@ -79,19 +88,19 @@ provider "datadog" {
 
 ### 2. The ShopMicro dashboard
 
-dashboard ที่เรียงลำดับพร้อม golden signal สำหรับ gateway `template_variable` ให้คุณ filter ทั้งบอร์ดตาม cluster ดังนั้น dashboard เดียวแสดง cloud ใด ๆ หรือทั้งหมด
+dashboard ที่เรียงลำดับพร้อม golden signal สำหรับ gateway `template_variable` ให้คุณ filter ทั้งบอร์ดตาม cluster ดังนั้น dashboard เดียวแสดง cloud ใด ๆ หรือทั้งหมด `defaults` (เป็น list) คือ attribute ปัจจุบัน — `default` แบบค่าเดียวเก่านั้น deprecated แล้ว
 
 ```hcl
 # modules/datadog-monitoring/dashboard.tf
 resource "datadog_dashboard" "shopmicro" {
   title       = "ShopMicro — Service Health"
-  description  = "Golden signals for ShopMicro across all clouds. Managed by Terraform."
+  description = "Golden signals for ShopMicro across all clouds. Managed by Terraform."
   layout_type = "ordered"
 
   template_variable {
-    name    = "cluster"
-    prefix  = "kube_cluster_name"
-    default = "*"
+    name     = "cluster"
+    prefix   = "kube_cluster_name"
+    defaults = ["*"]
   }
 
   widget {

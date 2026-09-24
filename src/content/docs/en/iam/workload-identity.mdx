@@ -45,8 +45,8 @@ Each implementation reads the cluster's OIDC issuer (an output of the cluster mo
 Look up the cluster's OIDC issuer by name, register it as an IAM OIDC provider, and write an assume-role policy whose `sub` condition pins exactly one service account.
 
 ```hcl
-variable "cluster_name"    { type = string }
-variable "namespace"       { type = string }
+variable "cluster_name" { type = string }
+variable "namespace" { type = string }
 variable "service_account" { type = string }
 
 data "aws_eks_cluster" "this" {
@@ -111,8 +111,8 @@ The pod's service account then carries the annotation `eks.amazonaws.com/role-ar
 Create a Google service account, grant the Kubernetes service account permission to impersonate it via the `roles/iam.workloadIdentityUser` binding, and attach the custom role.
 
 ```hcl
-variable "cluster_name"    { type = string }
-variable "namespace"       { type = string }
+variable "cluster_name" { type = string }
+variable "namespace" { type = string }
 variable "service_account" { type = string }
 
 data "google_project" "current" {}
@@ -126,7 +126,7 @@ resource "google_service_account" "this" {
 resource "google_service_account_iam_member" "wi_user" {
   service_account_id = google_service_account.this.name
   role               = "roles/iam.workloadIdentityUser"
-  member = "serviceAccount:${data.google_project.current.project_id}.svc.id.goog[${var.namespace}/${var.service_account}]"
+  member             = "serviceAccount:${data.google_project.current.project_id}.svc.id.goog[${var.namespace}/${var.service_account}]"
 }
 
 # attach the custom role from the least-privilege lesson
@@ -146,11 +146,11 @@ The `member` string is the workload-identity pool binding — `PROJECT.svc.id.go
 
 ### 3. `modules/azure/iam/main.tf` — Managed Identity
 
-Create a user-assigned identity, federate it to the cluster's OIDC issuer for one service account, and assign the custom role over one resource group.
+Create a user-assigned identity, federate it to the cluster's OIDC issuer for one service account, and assign the custom role over one resource group. `azurerm_federated_identity_credential` takes the identity by `user_assigned_identity_id` — a full resource id — rather than a separate `resource_group_name` plus `parent_id`, in current azurerm.
 
 ```hcl
-variable "cluster_name"    { type = string }
-variable "namespace"       { type = string }
+variable "cluster_name" { type = string }
+variable "namespace" { type = string }
 variable "service_account" { type = string }
 
 # the AKS cluster lives in the platform resource group (named after the platform)
@@ -176,8 +176,7 @@ resource "azurerm_user_assigned_identity" "this" {
 
 resource "azurerm_federated_identity_credential" "this" {
   name                      = "${var.namespace}-${var.service_account}"
-  resource_group_name       = var.resource_group_name
-  parent_id                 = azurerm_user_assigned_identity.this.id
+  user_assigned_identity_id = azurerm_user_assigned_identity.this.id
   audience                  = ["api://AzureADTokenExchange"]
   issuer                    = data.azurerm_kubernetes_cluster.this.oidc_issuer_url
   subject                   = "system:serviceaccount:${var.namespace}:${var.service_account}"
